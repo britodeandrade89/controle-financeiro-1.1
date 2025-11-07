@@ -48,7 +48,7 @@ const SPENDING_CATEGORIES = {
 };
 
 // =================================================================================
-// INITIAL DATA (CORRECTED)
+// INITIAL DATA (SOURCE OF TRUTH FOR NOVEMBER 2025)
 // =================================================================================
 const initialMonthData = {
     incomes: [
@@ -144,7 +144,6 @@ const initialMonthData = {
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 let chat: Chat | null = null;
 let currentMonthData = { incomes: [], expenses: [], shoppingItems: [], avulsosItems: [], goals: [], bankAccounts: [] };
-let currentModalType = '';
 let currentMonth = 11;
 let currentYear = 2025;
 let deferredPrompt;
@@ -342,6 +341,33 @@ function saveData() {
     saveDataToFirestore();
 }
 
+async function showInitialDataAndSync() {
+    console.log("Forcing initial state to November 2025 and syncing with cloud.");
+    
+    // Step 1: Set local state to the correct, hardcoded data
+    currentMonthData = initialMonthData;
+    currentYear = 2025;
+    currentMonth = 11;
+    
+    // Step 2: Render the UI immediately with this correct data
+    updateMonthDisplay();
+    updateUI();
+
+    // Step 3: Force-save this correct data to Firestore to overwrite any old/bad data
+    if (!currentUser || !isConfigured) return;
+    const monthKey = '2025-11';
+    const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
+    try {
+        await setDoc(docRef, currentMonthData);
+        console.log("Successfully synced initial November data to Firestore.");
+        // Step 4: Now that the cloud is correct, attach the listener for real-time updates for the CURRENT month
+        loadDataForCurrentMonth();
+    } catch (error) {
+        console.error("Failed to sync initial data to Firestore:", error);
+        alert("Não foi possível salvar os dados iniciais na nuvem. As alterações podem não ser salvas.");
+    }
+}
+
 function loadDataForCurrentMonth() {
     if (!currentUser || !isConfigured) return;
     
@@ -390,7 +416,6 @@ async function createNewMonthData() {
         baseData = { incomes: [], expenses: [], shoppingItems: [], avulsosItems: [], goals: [], bankAccounts: [] };
     }
     
-    // FIX: Safely clone arrays to avoid circular reference errors by creating new plain objects.
     const clonedBankAccounts = (baseData.bankAccounts || []).map(acc => ({...acc}));
     const clonedGoals = (baseData.goals || []).map(goal => ({...goal}));
 
@@ -410,668 +435,357 @@ async function createNewMonthData() {
         { id: `inc_mumbuca_andre_${Date.now()}`, description: 'MUMBUCA ANDRE', amount: 650.00, paid: false }
     );
     
-    if (currentYear === 2025 && currentMonth === 12) {
-        newMonthData.incomes.push(
-            { id: `inc_13_marcelly_${Date.now()}`, description: 'SEGUNDA PARCELA 13º SALÁRIO MARCELLY', amount: 3349.92 / 2, paid: false },
-            { id: `inc_13_andre_${Date.now()}`, description: 'SEGUNDA PARCELA 13º SALÁRIO ANDRÉ', amount: 3349.92 / 2, paid: false }
-        );
-    }
-
-    (baseData.expenses || []).forEach(expense => {
-        let shouldAdd = false;
-        const newExpense = { ...expense, id: `exp_${Date.now()}_${Math.random()}`, paid: false, paidDate: null };
+    const recurringExpenses = (baseData.expenses || []).filter(exp => exp.cyclic);
+    recurringExpenses.forEach(exp => {
+        let newCurrent = exp.current;
+        let newTotal = exp.total;
+        if (exp.current < exp.total) {
+            newCurrent++;
+        }
         
-        if (expense.total > 1 && expense.current < expense.total) {
-            newExpense.current += 1;
-            shouldAdd = true;
-        } else if (expense.cyclic) {
-            if (expense.total <= 1) newExpense.current = 1; 
-            shouldAdd = true;
-        }
-
-        if(shouldAdd) {
-            const newDate = new Date(newExpense.dueDate + 'T00:00:00');
-            newDate.setMonth(newDate.getMonth() + 1);
-            newExpense.dueDate = newDate.toISOString().split('T')[0];
-            newMonthData.expenses.push(newExpense);
-        }
+        const newDueDate = new Date(exp.dueDate);
+        newDueDate.setMonth(newDueDate.getMonth() + 1);
+        
+        newMonthData.expenses.push({
+            ...exp,
+            id: `exp_${Date.now()}_${Math.random()}`,
+            paid: false,
+            paidDate: null,
+            current: newCurrent,
+            total: newTotal,
+            dueDate: newDueDate.toISOString().split('T')[0]
+        });
     });
 
     currentMonthData = newMonthData;
-    saveData();
-}
-
-function changeMonth(offset) {
-    currentMonth += offset;
-    if (currentMonth > 12) {
-        currentMonth = 1;
-        currentYear++;
-    } else if (currentMonth < 1) {
-        currentMonth = 12;
-        currentYear--;
-    }
-    loadDataForCurrentMonth();
-}
-
-// =================================================================================
-// SYNC UI
-// =================================================================================
-
-function updateProfilePage() {
-    const syncStatusText = document.getElementById('sync-status-text');
-    const userIdText = document.getElementById('user-id-text');
-    const userIdContainer = document.getElementById('user-id-container');
-    const syncStatusInfo = document.getElementById('sync-status-info');
-
-    if (currentUser) {
-        userIdText.textContent = currentUser.uid;
-        userIdContainer.style.display = 'block';
-    } else {
-         userIdContainer.style.display = 'none';
-    }
-
-    if (!isConfigured) {
-        syncStatusText.textContent = 'Nuvem Não Configurada';
-        syncStatusText.style.color = 'var(--text-light)';
-        if (syncStatusInfo) {
-            syncStatusInfo.innerHTML = `Seus dados não estão sendo salvos. Para habilitar a sincronização na nuvem e acessar de qualquer lugar, configure suas credenciais no arquivo <code>firebase-config.js</code>.`;
-        }
-        return;
-    }
-
-    if (syncStatus === 'synced') {
-        syncStatusText.textContent = 'Conectado e Sincronizado';
-        syncStatusText.style.color = 'var(--success)';
-        if (syncStatusInfo) syncStatusInfo.innerHTML = 'Seus dados são salvos automaticamente na nuvem, permitindo o acesso de qualquer dispositivo.';
-    } else if (syncStatus === 'syncing') {
-         syncStatusText.textContent = 'Sincronizando...';
-         syncStatusText.style.color = 'var(--warning)';
-         if (syncStatusInfo) syncStatusInfo.innerHTML = 'Enviando as últimas alterações para a nuvem...';
-    } else if (syncStatus === 'error') {
-         syncStatusText.textContent = 'Erro de Configuração';
-         syncStatusText.style.color = 'var(--danger)';
-         if (syncStatusInfo) {
-             if(syncErrorDetails) {
-                 syncStatusInfo.innerHTML = syncErrorDetails;
-             } else {
-                 syncStatusInfo.innerHTML = 'Ocorreu um erro ao sincronizar com a nuvem. Verifique sua conexão com a internet.';
-             }
-         }
-    } else {
-         syncStatusText.textContent = 'Desconectado';
-         syncStatusText.style.color = 'var(--text-light)';
-         if (syncStatusInfo) syncStatusInfo.innerHTML = 'Tentando conectar com a nuvem...';
-    }
-}
-
-function updateSyncButtonState() {
-    if (!elements.syncBtn) return;
-    
-    if (!isConfigured) {
-        elements.syncBtn.innerHTML = ICONS.cloudOff;
-        elements.syncBtn.title = 'App não configurado para sincronizar. Siga as instruções em firebase-config.js.';
-        elements.syncBtn.style.display = 'flex';
-        elements.syncBtn.classList.remove('syncing', 'unsynced', 'sync-error');
-        elements.syncBtn.disabled = true;
-        return;
-    }
-    
-    elements.syncBtn.style.display = 'flex';
-    elements.syncBtn.classList.remove('syncing', 'unsynced', 'sync-error');
-    elements.syncBtn.disabled = true; // Button is now just an indicator
-
-    if (isSyncing || syncStatus === 'syncing') {
-        elements.syncBtn.innerHTML = ICONS.sync;
-        elements.syncBtn.title = 'Sincronizando...';
-        elements.syncBtn.classList.add('syncing');
-    } else if (syncStatus === 'error') {
-        elements.syncBtn.innerHTML = ICONS.info;
-        elements.syncBtn.title = 'Erro na sincronização. Verifique a conexão.';
-        elements.syncBtn.classList.add('sync-error');
-    } else { // 'synced' or 'disconnected'
-        elements.syncBtn.innerHTML = ICONS.cloudCheck;
-        const lastSync = localStorage.getItem('lastSync');
-        const lastSyncTime = lastSync ? new Date(lastSync).toLocaleTimeString('pt-BR') : 'agora';
-        elements.syncBtn.title = `Sincronizado. Última vez em: ${lastSyncTime}`;
-    }
-}
-
-
-function updateLastSyncTime(isSuccess) {
-    if (isSuccess) {
-        const now = new Date();
-        localStorage.setItem('lastSync', now.toISOString());
-    }
-}
-
-// =================================================================================
-// NAVIGATION
-// =================================================================================
-function navigateTo(viewName) {
-    elements.appViews.forEach(view => {
-        view.classList.toggle('active', view.id === `view-${viewName}`);
-    });
-
-    elements.tabButtons.forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.view === viewName);
-    });
-
-    const showMonthSelector = ['home', 'lancamentos', 'metas'].includes(viewName);
-    elements.monthSelector.style.display = showMonthSelector ? 'flex' : 'none';
-
-    if (viewName === 'perfil') {
-        updateProfilePage();
-    }
-}
-
-// =================================================================================
-// UI RENDERING
-// =================================================================================
-function updateUI() {
-    if(!currentUser) return; // Don't render if not logged in
-    updateSummary();
-    renderList('incomes', elements.incomesList, createIncomeItem, "Nenhuma entrada registrada", ICONS.income);
-    renderList('expenses', elements.expensesList, createExpenseItem, "Nenhuma despesa registrada", ICONS.expense, true);
-    renderList('shoppingItems', elements.shoppingList, createShoppingItem, "Nenhuma compra registrada", ICONS.shopping);
-    renderList('avulsosItems', elements.avulsosList, createShoppingItem, "Nenhuma despesa avulsa registrada", ICONS.variable);
-    renderGoalsPage();
-    renderBankAccounts();
-    renderOverviewChart();
-}
-
-function updateSummary() {
-    // Calculations
-    const allIncomes = currentMonthData.incomes || [];
-    const allExpenses = currentMonthData.expenses || [];
-    const allShopping = currentMonthData.shoppingItems || [];
-    const allAvulsos = currentMonthData.avulsosItems || [];
-
-    const totalIncome = allIncomes.reduce((sum, item) => sum + item.amount, 0);
-    const salaryIncome = allIncomes
-        .filter(item => item.description.toUpperCase().includes('SALARIO'))
-        .reduce((sum, item) => sum + item.amount, 0);
-    const mumbucaIncome = allIncomes
-        .filter(item => item.description.toUpperCase().includes('MUMBUCA'))
-        .reduce((sum, item) => sum + item.amount, 0);
-    
-    // Mumbuca spending now includes shopping list items and specific expenses
-    const mumbucaExpenses = allExpenses.filter(item => item.category === 'abastecimento_mumbuca');
-    const totalMumbucaSpending = mumbucaExpenses.reduce((sum, item) => sum + item.amount, 0);
-
-    // Expenses to be paid from Salary (all expenses EXCEPT mumbuca fuel)
-    const expensesFromSalary = [...allExpenses.filter(item => item.category !== 'abastecimento_mumbuca'), ...allShopping];
-    const totalPlannedExpenses = expensesFromSalary.reduce((sum, item) => sum + item.amount, 0);
-    const totalPaidExpenses = expensesFromSalary
-        .filter(item => item.paid)
-        .reduce((sum, item) => sum + item.amount, 0);
-    
-    const totalAvulsosSpending = allAvulsos.reduce((sum, item) => sum + item.amount, 0);
-
-    // This is the total committed spending for the month from all sources.
-    const totalCommittedSpending = totalPlannedExpenses + totalMumbucaSpending; 
-    
-    // Final balance is Salary minus salary-paid debts and one-offs
-    const finalBalance = salaryIncome - totalPlannedExpenses - totalAvulsosSpending;
-
-    // Progress percentages
-    const totalIncomeProgress = totalIncome > 0 ? (totalCommittedSpending / totalIncome) * 100 : 0;
-    const salaryIncomeProgress = salaryIncome > 0 ? (totalPlannedExpenses / salaryIncome) * 100 : 0;
-    const mumbucaIncomeProgress = mumbucaIncome > 0 ? (totalMumbucaSpending / mumbucaIncome) * 100 : 0;
-    const monthlyDebtsProgress = totalPlannedExpenses > 0 ? (totalPaidExpenses / totalPlannedExpenses) * 100 : 0;
-    
-    // Update Total Income Card
-    elements.totalIncome.textContent = formatCurrency(totalIncome);
-    elements.totalIncomeProgressBar.style.width = `${Math.min(totalIncomeProgress, 100)}%`;
-    elements.totalIncomeSubtitle.textContent = `${formatCurrency(totalCommittedSpending)} gastos de ${formatCurrency(totalIncome)}`;
-
-    // Update Salary Income Card
-    elements.salaryIncome.textContent = formatCurrency(salaryIncome);
-    elements.salaryIncomeProgressBar.style.width = `${Math.min(salaryIncomeProgress, 100)}%`;
-    elements.salaryIncomeSubtitle.textContent = `${formatCurrency(totalPlannedExpenses)} gastos de ${formatCurrency(salaryIncome)}`;
-    
-    // Update Mumbuca Income Card
-    elements.mumbucaIncome.textContent = formatCurrency(mumbucaIncome);
-    elements.mumbucaIncomeProgressBar.style.width = `${Math.min(mumbucaIncomeProgress, 100)}%`;
-    elements.mumbucaIncomeSubtitle.textContent = `${formatCurrency(totalMumbucaSpending)} gastos de ${formatCurrency(mumbucaIncome)}`;
-    
-    // Update Monthly Debts Card (now only shows salary-based debts)
-    elements.monthlyDebts.textContent = formatCurrency(totalPlannedExpenses);
-    elements.monthlyDebtsProgressBar.style.width = `${Math.min(monthlyDebtsProgress, 100)}%`;
-    elements.monthlyDebtsSubtitle.textContent = `${formatCurrency(totalPaidExpenses)} pagos de ${formatCurrency(totalPlannedExpenses)}`;
-    
-    // Update Final Balance Card
-    elements.finalBalance.textContent = formatCurrency(finalBalance);
-    elements.finalBalanceSubtitle.textContent = `Salário - Dívidas - Avulsos`;
+    await saveDataToFirestore(); 
+    updateUI();
 }
 
 function updateMonthDisplay() {
     elements.monthDisplay.textContent = `${getMonthName(currentMonth)} ${currentYear}`;
 }
 
-function renderList(type, listElement, itemCreator, emptyMessage, emptyIcon, groupByCat = false) {
-    listElement.innerHTML = '';
-    const items = currentMonthData[type] || [];
-
-    if (items.length === 0) {
-        listElement.innerHTML = `<div class="empty-state">${emptyIcon}<div>${emptyMessage}</div></div>`;
-        return;
-    }
-    
-    if (groupByCat) {
-        const fixed = items.filter(i => i.type === 'fixed');
-        const variable = items.filter(i => i.type === 'variable');
-        
-        if (fixed.length > 0) {
-            const header = document.createElement('div');
-            header.className = 'item-header';
-            header.innerHTML = `${ICONS.fixed} Despesas Fixas`;
-            listElement.appendChild(header);
-            fixed.sort((a,b) => Number(a.paid) - Number(b.paid) || new Date(a.dueDate) - new Date(b.dueDate)).forEach(item => listElement.appendChild(itemCreator(item, type)));
+function changeMonth(direction) {
+    if (direction === 'next') {
+        currentMonth++;
+        if (currentMonth > 12) {
+            currentMonth = 1;
+            currentYear++;
         }
-
-        if (variable.length > 0) {
-            const header = document.createElement('div');
-            header.className = 'item-header';
-            header.innerHTML = `${ICONS.variable} Despesas Variáveis`;
-            listElement.appendChild(header);
-            variable.sort((a,b) => Number(a.paid) - Number(b.paid) || new Date(a.dueDate) - new Date(b.dueDate)).forEach(item => listElement.appendChild(itemCreator(item, type)));
-        }
-
     } else {
-        items.sort((a, b) => new Date(b.paidDate) - new Date(a.paidDate)).forEach(item => listElement.appendChild(itemCreator(item, type)));
-    }
-}
-
-function createIncomeItem(income, type) {
-    const item = document.createElement('div');
-    item.className = 'item';
-    item.onclick = () => openEditModal(income.id, type);
-    item.innerHTML = `
-        <div class="item-content">
-            <div class="item-details">
-                <div class="item-description">${income.description}</div>
-            </div>
-        </div>
-        <div class="item-actions">
-            <span class="item-amount income-amount">${formatCurrency(income.amount)}</span>
-            <button class="action-btn edit-btn" title="Editar">${ICONS.edit}</button>
-            <button class="action-btn delete-btn" title="Excluir">${ICONS.delete}</button>
-        </div>
-    `;
-    item.querySelector('.delete-btn').onclick = (e) => { e.stopPropagation(); deleteItem(income.id, type); };
-    return item;
-}
-
-function createExpenseItem(expense, type) {
-    const item = document.createElement('div');
-    const isFinal = expense.current === expense.total;
-    const isOverdue = expense.dueDate && !expense.paid && new Date(expense.dueDate) < new Date();
-    
-    let dateInfo = '';
-    if (expense.paid && expense.paidDate) {
-        dateInfo = `<span class="item-paid-date">${ICONS.check} Pago em ${formatDate(expense.paidDate)}</span>`;
-    } else if (expense.dueDate) {
-        dateInfo = `<span class="item-due-date ${isOverdue ? 'overdue' : ''}">${ICONS.calendar} Vence em ${formatDate(expense.dueDate)}</span>`;
-    }
-
-    const isInvestment = expense.description?.toUpperCase().includes('INVESTIMENTO PARA VIAGEM');
-    const checkTitle = isInvestment
-        ? (expense.paid ? 'Cancelar Check-in do Investimento' : 'Fazer Check-in do Investimento')
-        : (expense.paid ? 'Marcar como pendente' : 'Marcar como pago');
-
-    item.className = 'item';
-    item.onclick = () => openEditModal(expense.id, type);
-    
-    item.innerHTML = `
-        <button class="check-btn ${expense.paid ? 'paid' : ''}" title="${checkTitle}">${ICONS.check}</button>
-        <div class="item-info-wrapper">
-            <div class="item-primary-info">
-                <div class="item-description ${expense.paid ? 'paid' : ''}">${expense.description}</div>
-                <div class="item-actions">
-                    <button class="action-btn edit-btn" title="Editar">${ICONS.edit}</button>
-                    <button class="action-btn delete-btn" title="Excluir">${ICONS.delete}</button>
-                </div>
-            </div>
-            <div class="item-secondary-info">
-                 <div class="item-meta">
-                    <span class="item-type type-${expense.type}">${expense.type === 'fixed' ? 'Fixo' : 'Variável'}</span>
-                    ${expense.total > 1 ? `<span class="item-installments ${isFinal ? 'final-installment' : ''}">${expense.current}/${expense.total}</span>` : ''}
-                </div>
-                <div class="item-amount expense-amount">${formatCurrency(expense.amount)}</div>
-            </div>
-            <div class="item-tertiary-info">
-                ${dateInfo}
-            </div>
-        </div>
-    `;
-
-    item.querySelector('.check-btn').onclick = (e) => { e.stopPropagation(); togglePaid(expense.id, type); };
-    item.querySelector('.delete-btn').onclick = (e) => { e.stopPropagation(); deleteItem(expense.id, type); };
-    item.querySelector('.edit-btn').onclick = (e) => { e.stopPropagation(); openEditModal(expense.id, type); };
-    
-    return item;
-}
-
-function createShoppingItem(itemData, type) {
-    const item = document.createElement('div');
-    const isOverdue = itemData.dueDate && !itemData.paid && new Date(itemData.dueDate) < new Date();
-
-    let dateInfo = '';
-    if (itemData.paid && itemData.paidDate) {
-        dateInfo = `<span class="item-paid-date">${ICONS.check} Pago em ${formatDate(itemData.paidDate)}</span>`;
-    } else if (itemData.dueDate) {
-        dateInfo = `<span class="item-due-date ${isOverdue ? 'overdue' : ''}">${ICONS.calendar} Vence em ${formatDate(itemData.dueDate)}</span>`;
-    }
-    
-    const checkTitle = itemData.paid ? 'Marcar como pendente' : 'Marcar como pago';
-
-    item.className = 'item';
-    item.onclick = () => openEditModal(itemData.id, type);
-    
-    item.innerHTML = `
-        <button class="check-btn ${itemData.paid ? 'paid' : ''}" title="${checkTitle}">${ICONS.check}</button>
-        <div class="item-info-wrapper">
-            <div class="item-primary-info">
-                <div class="item-description ${itemData.paid ? 'paid' : ''}">${itemData.description}</div>
-                <div class="item-actions">
-                    <button class="action-btn edit-btn" title="Editar">${ICONS.edit}</button>
-                    <button class="action-btn delete-btn" title="Excluir">${ICONS.delete}</button>
-                </div>
-            </div>
-            <div class="item-secondary-info">
-                 <div class="item-meta">
-                    ${dateInfo}
-                </div>
-                <div class="item-amount expense-amount">${formatCurrency(itemData.amount)}</div>
-            </div>
-        </div>
-    `;
-
-    item.querySelector('.check-btn').onclick = (e) => { e.stopPropagation(); togglePaid(itemData.id, type); };
-    item.querySelector('.delete-btn').onclick = (e) => { e.stopPropagation(); deleteItem(itemData.id, type); };
-    item.querySelector('.edit-btn').onclick = (e) => { e.stopPropagation(); openEditModal(itemData.id, type); };
-    
-    return item;
-}
-
-function renderOverviewChart() {
-    const allExpenses = [...(currentMonthData.expenses || []), ...(currentMonthData.shoppingItems || []), ...(currentMonthData.avulsosItems || [])];
-    const totalExpenses = allExpenses.reduce((s, e) => s + e.amount, 0);
-
-    if (elements.overviewChart) {
-        let overviewHTML = '';
-        if (totalExpenses > 0) {
-            overviewHTML += createPieChart();
-
-            const marciaBritoDebt = allExpenses
-                .filter(expense => expense.description.toUpperCase().includes('MARCIA BRITO'))
-                .reduce((sum, expense) => sum + expense.amount, 0);
-            
-            if (marciaBritoDebt > 0) {
-                overviewHTML += `
-                    <div class="debt-summary">
-                        <div class="debt-summary-header">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                            <span>Total a pagar para</span>
-                        </div>
-                        <div class="debt-summary-title">Marcia Brito</div>
-                        <div class="debt-summary-amount">${formatCurrency(marciaBritoDebt)}</div>
-                    </div>
-                `;
-            }
-        } else {
-            overviewHTML = `
-                <div class="chart-placeholder">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>
-                    Sem dados de despesas para exibir o gráfico.
-                </div>
-            `;
+        currentMonth--;
+        if (currentMonth < 1) {
+            currentMonth = 12;
+            currentYear--;
         }
-        elements.overviewChart.innerHTML = overviewHTML;
     }
+    loadDataForCurrentMonth();
 }
 
 // =================================================================================
-// EVENT HANDLERS & ACTIONS
+// CALCULATIONS
 // =================================================================================
-function togglePaid(itemId, type) {
-    const items = currentMonthData[type];
-    if (!items) return;
+function calculateTotals() {
+    const incomes = currentMonthData.incomes || [];
+    const expenses = currentMonthData.expenses || [];
+    const shopping = currentMonthData.shoppingItems || [];
+    const avulsos = currentMonthData.avulsosItems || [];
 
-    const item = items.find(i => i.id === itemId);
-    if (item) {
-        item.paid = !item.paid;
-        if (item.paid) {
-            item.paidDate = new Date().toISOString().split('T')[0];
-        } else {
-            item.paidDate = null;
-        }
-        saveData();
-    }
-}
+    const totalIncome = incomes.reduce((sum, item) => sum + item.amount, 0);
+    const salaryIncome = incomes.filter(i => i.description.toLowerCase().includes('salario')).reduce((sum, item) => sum + item.amount, 0);
+    const mumbucaIncome = incomes.filter(i => i.description.toLowerCase().includes('mumbuca')).reduce((sum, item) => sum + item.amount, 0);
 
-function deleteItem(itemId, type) {
-    if (!confirm('Tem certeza que deseja excluir este item?')) return;
+    const allExpenses = [...expenses, ...shopping, ...avulsos];
+    const totalExpenses = allExpenses.reduce((sum, item) => sum + item.amount, 0);
+    const paidExpenses = allExpenses.filter(item => item.paid).reduce((sum, item) => sum + item.amount, 0);
     
-    currentMonthData[type] = currentMonthData[type].filter(i => i.id !== itemId);
-    saveData();
-}
-
-function openAddModal(type) {
-    currentModalType = type;
-    elements.addForm.reset();
+    const salarySpent = paidExpenses; 
     
-    const isExpense = type === 'expenses';
+    const mumbucaSpent = shopping.filter(item => item.paid).reduce((sum, item) => sum + item.amount, 0);
 
-    elements.typeGroup.style.display = isExpense ? 'block' : 'none';
-    elements.categoryGroup.style.display = isExpense ? 'block' : 'none';
-    elements.installmentsGroup.style.display = isExpense ? 'flex' : 'none';
-    elements.dueDateGroup.style.display = isExpense ? 'block' : 'none';
-    document.getElementById('cyclicGroup').style.display = isExpense ? 'flex' : 'none';
+    const finalBalance = salaryIncome - paidExpenses;
     
-    let title = 'Nova Receita';
-    if (isExpense) title = 'Nova Despesa';
-    if (type === 'shoppingItems') title = 'Nova Compra com Mumbuca';
-    if (type === 'avulsosItems') {
-        title = 'Nova Despesa Avulsa';
-        elements.categoryGroup.style.display = 'block'; // Also show category for Avulsos
-    }
+    const totalToPayForMarcia = expenses.filter(e => !e.paid && e.description.toLowerCase().includes('marcia brito')).reduce((acc, curr) => acc + curr.amount, 0);
 
-
-    elements.addModalTitle.textContent = title;
-    elements.addModal.classList.add('active');
-    document.getElementById('description').focus();
-}
-
-function openEditModal(itemId, type) {
-    const items = currentMonthData[type];
-    const item = items.find(i => i.id === itemId);
-    if (!item) return;
-
-    elements.editForm.reset();
-    elements.editItemId.value = itemId;
-    elements.editItemType.value = type;
-    elements.editDescription.value = item.description;
-    elements.editAmount.value = formatCurrency(item.amount).replace('R$', '').trim();
-    
-    const isExpense = type === 'expenses';
-    const isShoppingOrAvulso = type === 'shoppingItems' || type === 'avulsosItems';
-    
-    elements.editCategoryGroup.style.display = isExpense || type === 'avulsosItems' ? 'block' : 'none';
-    elements.editDueDateGroup.style.display = isExpense ? 'block' : 'none';
-    elements.editPaidDateGroup.style.display = isExpense || isShoppingOrAvulso ? 'block' : 'none';
-    elements.editInstallmentsGroup.style.display = isExpense && item.total > 1 ? 'flex' : 'none';
-    elements.editInstallmentsInfo.style.display = isExpense && item.total > 1 ? 'flex' : 'none';
-
-    if (isExpense) {
-        elements.editCategory.value = item.category || '';
-        elements.editDueDate.value = item.dueDate || '';
-        elements.editCurrentInstallment.value = item.current || 1;
-        elements.editTotalInstallments.value = item.total || 1;
-    }
-    if(type === 'avulsosItems') {
-         elements.editCategory.value = item.category || 'outros';
-    }
-    
-    if (item.paidDate) {
-         elements.editPaidDate.value = item.paidDate;
-         elements.editPaidDateGroup.style.display = 'block';
-    } else {
-        elements.editPaidDateGroup.style.display = 'none';
-    }
-
-    let title = 'Editar Receita';
-    if (isExpense) title = 'Editar Despesa';
-    if (type === 'shoppingItems') title = 'Editar Compra';
-    if (type === 'avulsosItems') title = 'Editar Despesa Avulsa';
-
-    elements.editModalTitle.textContent = title;
-    elements.editModal.classList.add('active');
-}
-
-function closeModal(modalElement) {
-    if (modalElement) {
-        modalElement.classList.remove('active');
-    }
-}
-
-function handleFormSubmit(event) {
-    event.preventDefault();
-    const formData = new FormData(elements.addForm);
-    const amount = parseCurrency(formData.get('amount'));
-    if (amount <= 0) {
-        alert("O valor deve ser maior que zero.");
-        return;
-    }
-    
-    let newItem = {
-        id: `${currentModalType}_${Date.now()}`,
-        description: formData.get('description'),
-        amount: amount,
-        paid: false,
+    return {
+        totalIncome,
+        salaryIncome,
+        mumbucaIncome,
+        totalExpenses,
+        paidExpenses,
+        salarySpent,
+        mumbucaSpent,
+        finalBalance,
+        totalToPayForMarcia
     };
-    
-    if (currentModalType === 'expenses') {
-        newItem = {
-            ...newItem,
-            type: formData.get('type'),
-            category: formData.get('category'),
-            paid: false,
-            cyclic: formData.get('cyclic') === 'on',
-            dueDate: formData.get('dueDate') || null,
-            paidDate: null,
-            current: parseInt(formData.get('currentInstallment')) || 1,
-            total: parseInt(formData.get('totalInstallments')) || 1
-        };
-    } else if (currentModalType === 'shoppingItems' || currentModalType === 'avulsosItems') {
-         newItem = {
-            ...newItem,
-            paid: true, // Avulsos/Shopping are paid immediately
-            paidDate: new Date().toISOString().split('T')[0],
-            category: 'shopping'
-        };
-        if (currentModalType === 'avulsosItems') {
-             newItem.category = formData.get('category') || 'outros';
-        }
-    }
-
-    currentMonthData[currentModalType].push(newItem);
-    saveData();
-    closeModal(elements.addModal);
 }
 
-function handleEditFormSubmit(event) {
-    event.preventDefault();
-    const formData = new FormData(elements.editForm);
-    const itemId = formData.get('editItemId');
-    const itemType = formData.get('editItemType');
-    const amount = parseCurrency(formData.get('editAmount'));
-     if (amount <= 0) {
-        alert("O valor deve ser maior que zero.");
+
+function calculateCategoryTotals() {
+    const categoryTotals = {};
+    const allItems = [...currentMonthData.expenses, ...currentMonthData.shoppingItems, ...currentMonthData.avulsosItems];
+    
+    allItems.forEach(item => {
+        const category = item.category || 'outros';
+        if (!categoryTotals[category]) {
+            categoryTotals[category] = 0;
+        }
+        categoryTotals[category] += item.amount;
+    });
+
+    return Object.entries(categoryTotals)
+        .map(([category, amount]) => ({ category, amount }))
+        .sort((a, b) => b.amount - a.amount);
+}
+
+
+// =================================================================================
+// UI RENDERING
+// =================================================================================
+function updateUI() {
+    if (!currentMonthData) return;
+    renderHomeScreen();
+    renderIncomes();
+    renderExpenses();
+    renderShopping();
+    renderAvulsos();
+    renderGoals();
+    renderBankAccounts();
+}
+
+function renderHomeScreen() {
+    const totals = calculateTotals();
+
+    elements.totalIncome.textContent = formatCurrency(totals.totalIncome);
+    elements.totalIncomeProgressBar.style.width = '100%';
+    elements.totalIncomeSubtitle.textContent = `100% recebido`;
+    
+    elements.salaryIncome.textContent = formatCurrency(totals.salaryIncome);
+    const salaryProgress = totals.salaryIncome > 0 ? (totals.salarySpent / totals.salaryIncome) * 100 : 0;
+    elements.salaryIncomeProgressBar.style.width = `${Math.min(salaryProgress, 100)}%`;
+    elements.salaryIncomeSubtitle.textContent = `${formatCurrency(totals.salarySpent)} gastos de ${formatCurrency(totals.salaryIncome)}`;
+    
+    elements.mumbucaIncome.textContent = formatCurrency(totals.mumbucaIncome);
+    const mumbucaProgress = totals.mumbucaIncome > 0 ? (totals.mumbucaSpent / totals.mumbucaIncome) * 100 : 0;
+    elements.mumbucaIncomeProgressBar.style.width = `${Math.min(mumbucaProgress, 100)}%`;
+    elements.mumbucaIncomeSubtitle.textContent = `${formatCurrency(totals.mumbucaSpent)} gastos de ${formatCurrency(totals.mumbucaIncome)}`;
+    
+    elements.monthlyDebts.textContent = formatCurrency(totals.totalExpenses);
+    const debtsProgress = totals.totalExpenses > 0 ? (totals.paidExpenses / totals.totalExpenses) * 100 : 0;
+    elements.monthlyDebtsProgressBar.style.width = `${debtsProgress}%`;
+    elements.monthlyDebtsSubtitle.textContent = `${formatCurrency(totals.paidExpenses)} pagos de ${formatCurrency(totals.totalExpenses)}`;
+    
+    elements.finalBalance.textContent = formatCurrency(totals.finalBalance);
+    elements.finalBalance.classList.toggle('balance-positive', totals.finalBalance >= 0);
+    elements.finalBalance.classList.toggle('balance-negative', totals.finalBalance < 0);
+    
+    renderPieChart();
+
+    const debtSummaryContainer = document.querySelector('.chart-container .section-header');
+    let debtSummaryEl = document.getElementById('debt-summary-marcia');
+    if (!debtSummaryEl) {
+        debtSummaryEl = document.createElement('div');
+        debtSummaryEl.id = 'debt-summary-marcia';
+        debtSummaryEl.className = 'debt-summary';
+        debtSummaryContainer.insertAdjacentElement('afterend', debtSummaryEl);
+    }
+    
+    debtSummaryEl.innerHTML = `
+        <div class="debt-summary-header">
+            <span>Total a pagar para</span>
+            <span class="debt-summary-title">Marcia Brito</span>
+        </div>
+        <div class="debt-summary-amount">${formatCurrency(totals.totalToPayForMarcia)}</div>
+    `;
+}
+
+function renderPieChart() {
+    const categoryTotals = calculateCategoryTotals();
+    const totalSpent = categoryTotals.reduce((sum, cat) => sum + cat.amount, 0);
+    elements.overviewChart.innerHTML = '';
+    
+    if (categoryTotals.length === 0) {
+        elements.overviewChart.innerHTML = `<div class="empty-state-small">${ICONS.info}<span>Nenhuma despesa registrada para gerar o gráfico.</span></div>`;
         return;
     }
     
-    const item = currentMonthData[itemType].find(i => i.id === itemId);
-    if (item) {
-        item.description = formData.get('editDescription');
-        item.amount = amount;
+    const chartContainer = document.createElement('div');
+    chartContainer.className = 'pie-chart-container';
+    
+    const pieChart = document.createElement('div');
+    pieChart.className = 'pie-chart';
+    
+    const legend = document.createElement('div');
+    legend.className = 'pie-chart-legend';
+    
+    const colors = ['#14b8a6', '#3b82f6', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#64748b', '#10b981', '#6366f1', '#d946ef'];
+    let gradientParts = [];
+    let currentAngle = 0;
+    
+    categoryTotals.forEach((cat, index) => {
+        const percentage = (cat.amount / totalSpent) * 100;
+        const color = colors[index % colors.length];
         
-        if (itemType === 'expenses') {
-            item.category = formData.get('editCategory');
-            item.dueDate = formData.get('editDueDate');
-            item.current = parseInt(formData.get('editCurrentInstallment')) || item.current;
-            item.total = parseInt(formData.get('editTotalInstallments')) || item.total;
+        const angle = (cat.amount / totalSpent) * 360;
+        gradientParts.push(`${color} ${currentAngle}deg ${currentAngle + angle}deg`);
+        currentAngle += angle;
+
+        const legendItem = document.createElement('div');
+        legendItem.className = 'legend-item';
+        legendItem.innerHTML = `
+            <div class="legend-label">
+                <div class="legend-color" style="background-color: ${color};"></div>
+                <span>${SPENDING_CATEGORIES[cat.category]?.name || 'Outros'}</span>
+            </div>
+            <div class="legend-value">
+                ${formatCurrency(cat.amount)}
+                <span class="legend-percentage">(${percentage.toFixed(1)}%)</span>
+            </div>
+        `;
+        legend.appendChild(legendItem);
+    });
+
+    pieChart.style.background = `conic-gradient(${gradientParts.join(', ')})`;
+    
+    chartContainer.appendChild(pieChart);
+    chartContainer.appendChild(legend);
+    elements.overviewChart.appendChild(chartContainer);
+}
+
+
+function renderList(listElement, items, type) {
+    listElement.innerHTML = '';
+    if (items.length === 0) {
+        listElement.innerHTML = `<div class="empty-state-small">${ICONS.info}<span>Nenhum item adicionado ainda.</span></div>`;
+        return;
+    }
+
+    items.forEach(item => {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'item';
+        itemEl.dataset.id = item.id;
+        itemEl.dataset.type = type;
+
+        const isExpense = type === 'expenses' || type === 'shopping' || type === 'avulsos';
+        const isIncome = type === 'incomes';
+        const hasDueDate = item.dueDate;
+        const isOverdue = hasDueDate && !item.paid && new Date(item.dueDate) < new Date();
+
+        let html = `
+            <button class="check-btn ${item.paid ? 'paid' : ''}" data-id="${item.id}" data-type="${type}" aria-label="Marcar como pago">
+                ${ICONS.check}
+            </button>
+            <div class="item-info-wrapper">
+                <div class="item-primary-info">
+                    <span class="item-description ${item.paid ? 'paid' : ''}">${item.description}</span>
+                    <span class="item-amount ${isIncome ? 'income-amount' : 'expense-amount'}">${formatCurrency(item.amount)}</span>
+                </div>
+                <div class="item-secondary-info">
+                    <div class="item-meta">
+        `;
+        
+        if (item.type) {
+            html += `<span class="item-type type-${item.type}">${item.type === 'fixed' ? 'Fixo' : 'Variável'}</span>`;
         }
 
-        if (itemType === 'avulsosItems') {
-            item.category = formData.get('editCategory');
+        if (item.current && item.total) {
+            html += `<span class="item-installments">${item.current}/${item.total}</span>`;
         }
+        
+        html += `
+                    </div>
+                     <div class="item-actions">
+                        <button class="action-btn edit-btn" data-id="${item.id}" data-type="${type}">${ICONS.edit}</button>
+                        <button class="action-btn delete-btn" data-id="${item.id}" data-type="${type}">${ICONS.delete}</button>
+                    </div>
+                </div>
+        `;
 
-        if (itemType === 'expenses' || itemType === 'shoppingItems' || itemType === 'avulsosItems') {
-            const newPaidDate = formData.get('editPaidDate');
-            if (newPaidDate && newPaidDate !== item.paidDate) {
-                item.paidDate = newPaidDate;
-                item.paid = true;
-            } else if (!newPaidDate) {
-                item.paidDate = null;
-                item.paid = false;
+        if (isExpense) {
+            html += `<div class="item-tertiary-info">`;
+            if (item.paid && item.paidDate) {
+                html += `<span><span style="color:var(--success)">✓</span> Pago em ${formatDate(item.paidDate)}</span>`;
+            } else if (hasDueDate) {
+                html += `<span class="item-due-date ${isOverdue ? 'overdue' : ''}">${ICONS.calendar} Vence em ${formatDate(item.dueDate)}</span>`;
             }
+            html += `</div>`;
         }
-        
-        saveData();
-        closeModal(elements.editModal);
-    }
+
+        html += `</div>`;
+        itemEl.innerHTML = html;
+        listElement.appendChild(itemEl);
+    });
 }
 
-function renderGoalsPage() {
+function renderIncomes() {
+    renderList(elements.incomesList, currentMonthData.incomes.slice().sort((a,b) => b.amount - a.amount), 'incomes');
+}
+function renderExpenses() {
+    const sortedExpenses = currentMonthData.expenses.slice().sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+    renderList(elements.expensesList, sortedExpenses, 'expenses');
+}
+function renderShopping() {
+    renderList(elements.shoppingList, currentMonthData.shoppingItems.slice().sort((a,b) => b.id - a.id), 'shopping');
+}
+function renderAvulsos() {
+    const sortedAvulsos = currentMonthData.avulsosItems.slice().sort((a, b) => new Date(b.paidDate) - new Date(a.paidDate));
+    renderList(elements.avulsosList, sortedAvulsos, 'avulsos');
+}
+
+function renderGoals() {
+    elements.goalsList.innerHTML = '';
     const goals = currentMonthData.goals || [];
-    const expenses = [...(currentMonthData.expenses || []), ...(currentMonthData.shoppingItems || []), ...(currentMonthData.avulsosItems || [])];
-    
-    // Add automatic 'Avulsos' goal
-    const hasAvulsosGoal = goals.some(g => g.category === 'avulsos');
-    let autoAvulsosGoal = null;
-    if (!hasAvulsosGoal) {
-        const lastMonthSalary = 6699.84; // Hardcoded salary for auto-goal
-        const avulsosTarget = lastMonthSalary * 0.07; // 7% of salary
-        autoAvulsosGoal = { id: 'goal_auto_avulsos', category: 'avulsos', amount: avulsosTarget, auto: true };
+    const avulsosTotal = currentMonthData.avulsosItems.reduce((sum, item) => sum + item.amount, 0);
+
+    // Add automatic 'avulsos' goal if it doesn't exist
+    let avulsosGoal = goals.find(g => g.category === 'avulsos');
+    if (!avulsosGoal) {
+        avulsosGoal = { id: 'goal_avulsos', category: 'avulsos', amount: Math.max(400, avulsosTotal * 0.5), isAuto: true };
+    } else {
+        avulsosGoal.isAuto = true; // Mark it as auto
     }
 
-    const allGoals = autoAvulsosGoal ? [autoAvulsosGoal, ...goals] : goals;
-    
-    elements.goalsList.innerHTML = '';
+    const allGoals = [avulsosGoal, ...goals.filter(g => g.category !== 'avulsos')];
+
     if (allGoals.length === 0) {
-        elements.goalsList.innerHTML = `<div class="empty-state">${ICONS.goal}<div>Crie metas de gastos para acompanhar seus limites por categoria.</div></div>`;
+        elements.goalsList.innerHTML = `<div class="empty-state">${ICONS.goal}<h3>Sem Metas Definidas</h3><p>Crie metas para acompanhar seus gastos por categoria.</p></div>`;
         return;
     }
+    
+    allGoals.forEach(goal => {
+        const categoryInfo = SPENDING_CATEGORIES[goal.category];
+        if (!categoryInfo) return;
 
-    allGoals.sort((a, b) => a.category.localeCompare(b.category)).forEach(goal => {
         let spent = 0;
-        if (goal.category === 'avulsos') {
-            spent = (currentMonthData.avulsosItems || []).reduce((s, e) => s + e.amount, 0);
+        if (goal.category === 'shopping') {
+            spent = currentMonthData.shoppingItems.reduce((sum, item) => sum + item.amount, 0);
+        } else if (goal.category === 'avulsos') {
+            spent = avulsosTotal;
         } else {
-            spent = expenses.filter(e => e.category === goal.category).reduce((s, e) => s + e.amount, 0);
+            spent = currentMonthData.expenses.filter(e => e.category === goal.category).reduce((sum, item) => sum + item.amount, 0);
         }
-        
+
         const progress = goal.amount > 0 ? (spent / goal.amount) * 100 : 0;
         const remaining = goal.amount - spent;
         
         let progressClass = 'safe';
-        if (progress > 75) progressClass = 'warning';
-        if (progress >= 100) progressClass = 'danger';
+        if (progress > 100) progressClass = 'danger';
+        else if (progress > 75) progressClass = 'warning';
 
         const card = document.createElement('div');
         card.className = 'goal-card';
         card.innerHTML = `
             <div class="goal-card-header">
                 <div class="goal-card-title">
-                    ${SPENDING_CATEGORIES[goal.category]?.icon || ICONS.goal}
-                    <span>${SPENDING_CATEGORIES[goal.category]?.name || 'Meta'}</span>
+                    ${categoryInfo.icon}
+                    <span>${categoryInfo.name}</span>
                 </div>
                 <div class="goal-card-actions">
-                    ${goal.auto ? `<span class="goal-card-auto-info">Automático</span>` : `
-                    <button class="action-btn edit-goal-btn" data-id="${goal.id}">${ICONS.edit}</button>
-                    <button class="action-btn delete-goal-btn" data-id="${goal.id}">${ICONS.delete}</button>
-                    `}
+                    ${goal.isAuto 
+                        ? `<div class="goal-card-auto-info" title="Esta meta é ajustada automaticamente com base nos seus gastos.">${ICONS.lightbulb} Automático</div>` 
+                        : `<button class="action-btn edit-goal-btn" data-id="${goal.id}">${ICONS.edit}</button><button class="action-btn delete-goal-btn" data-id="${goal.id}">${ICONS.delete}</button>`
+                    }
                 </div>
             </div>
             <div class="goal-card-body">
@@ -1087,238 +801,511 @@ function renderGoalsPage() {
                 </div>
             </div>
         `;
-        
-        if (!goal.auto) {
-            card.querySelector('.edit-goal-btn').onclick = () => openGoalModal(goal.id);
-            card.querySelector('.delete-goal-btn').onclick = () => deleteGoal(goal.id);
-        }
-
         elements.goalsList.appendChild(card);
     });
-}
-
-function openGoalModal(goalId = null) {
-    elements.goalForm.reset();
-    if (goalId) {
-        const goal = currentMonthData.goals.find(g => g.id === goalId);
-        if (goal) {
-            elements.goalModalTitle.textContent = 'Editar Meta';
-            elements.goalId.value = goal.id;
-            elements.goalCategory.value = goal.category;
-            elements.goalAmount.value = formatCurrency(goal.amount).replace('R$', '').trim();
-            elements.goalCategory.disabled = true;
-        }
-    } else {
-        elements.goalModalTitle.textContent = 'Nova Meta';
-        elements.goalId.value = '';
-        elements.goalCategory.disabled = false;
-    }
-    elements.goalModal.classList.add('active');
-}
-
-function handleGoalFormSubmit(event) {
-    event.preventDefault();
-    const formData = new FormData(elements.goalForm);
-    const id = formData.get('goalId');
-    const category = formData.get('goalCategory');
-    const amount = parseCurrency(formData.get('goalAmount'));
-
-    if (currentMonthData.goals.some(g => g.category === category && g.id !== id)) {
-        alert('Já existe uma meta para esta categoria.');
-        return;
-    }
-
-    if (id) { // Editing
-        const goal = currentMonthData.goals.find(g => g.id === id);
-        if (goal) goal.amount = amount;
-    } else { // Adding
-        currentMonthData.goals.push({ id: `goal_${Date.now()}`, category, amount });
-    }
-    saveData();
-    closeModal(elements.goalModal);
-}
-
-function deleteGoal(goalId) {
-    if (!confirm('Tem certeza que deseja excluir esta meta?')) return;
-    currentMonthData.goals = currentMonthData.goals.filter(g => g.id !== goalId);
-    saveData();
 }
 
 function renderBankAccounts() {
     elements.bankAccountsList.innerHTML = '';
     const accounts = currentMonthData.bankAccounts || [];
-    let totalBalance = 0;
-
+    
     if (accounts.length === 0) {
-        elements.bankAccountsList.innerHTML = `<div class="empty-state-small">${ICONS.investment}<div>Adicione suas contas para ver o saldo total.</div></div>`;
-    } else {
-         accounts.forEach(acc => {
-            const item = document.createElement('div');
-            item.className = 'account-item';
-            item.onclick = () => openAccountModal(acc.id);
-            item.innerHTML = `
-                <div class="account-name">${acc.name}</div>
-                <div class="account-balance ${acc.balance < 0 ? 'balance-negative' : ''}">${formatCurrency(acc.balance)}</div>
-            `;
-            elements.bankAccountsList.appendChild(item);
-            totalBalance += acc.balance;
-        });
+        elements.bankAccountsList.innerHTML = `<div class="empty-state-small" style="padding: 1rem;">${ICONS.info}<span>Nenhuma conta adicionada.</span></div>`;
+        document.getElementById('accounts-total-container').style.display = 'none';
+        return;
     }
+
+    document.getElementById('accounts-total-container').style.display = 'flex';
+    let totalBalance = 0;
+    
+    accounts.forEach(account => {
+        totalBalance += account.balance;
+        const accountEl = document.createElement('div');
+        accountEl.className = 'account-item';
+        accountEl.dataset.id = account.id;
+        accountEl.innerHTML = `
+            <span class="account-name">${account.name}</span>
+            <div class="account-actions">
+                <span class="account-balance ${account.balance < 0 ? 'balance-negative' : ''}">${formatCurrency(account.balance)}</span>
+                <button class="action-btn edit-account-btn" data-id="${account.id}">${ICONS.edit}</button>
+                <button class="action-btn delete-account-btn" data-id="${account.id}">${ICONS.delete}</button>
+            </div>
+        `;
+        elements.bankAccountsList.appendChild(accountEl);
+    });
 
     const totalAmountEl = document.getElementById('accounts-total-amount');
     totalAmountEl.textContent = formatCurrency(totalBalance);
-    totalAmountEl.className = totalBalance < 0 ? 'balance-negative' : '';
+    totalAmountEl.classList.toggle('balance-negative', totalBalance < 0);
+    totalAmountEl.classList.remove('balance-positive');
 }
 
-function openAccountModal(accountId = null) {
+
+// =================================================================================
+// MODAL & FORM HANDLING
+// =================================================================================
+function openModal(modal) {
+    modal.style.display = 'flex';
+    setTimeout(() => modal.classList.add('active'), 10);
+}
+function closeModal(modal) {
+    modal.classList.remove('active');
+    setTimeout(() => {
+        modal.style.display = 'none';
+        resetForms();
+    }, 300);
+}
+function resetForms() {
+    elements.addForm.reset();
+    elements.editForm.reset();
+    elements.goalForm.reset();
     elements.accountForm.reset();
-    if (accountId) {
-        const account = currentMonthData.bankAccounts.find(a => a.id === accountId);
+    ['typeGroup', 'categoryGroup', 'installmentsGroup', 'dueDateGroup', 'cyclicGroup'].forEach(id => {
+        document.getElementById(id).style.display = 'none';
+    });
+}
+
+function setupAddModal(type) {
+    resetForms();
+    const modalTitle = elements.addModalTitle;
+    const typeGroup = elements.typeGroup;
+    const categoryGroup = elements.categoryGroup;
+    const installmentsGroup = elements.installmentsGroup;
+    const dueDateGroup = elements.dueDateGroup;
+    const cyclicGroup = document.getElementById('cyclicGroup');
+    document.getElementById('amount').placeholder = 'R$ 0,00';
+    document.getElementById('description').placeholder = 'Descrição da despesa';
+    
+    // Set hidden input to identify form type on submit
+    let typeInput = document.getElementById('formType');
+    if (!typeInput) {
+        typeInput = document.createElement('input');
+        typeInput.type = 'hidden';
+        typeInput.id = 'formType';
+        typeInput.name = 'formType';
+        elements.addForm.appendChild(typeInput);
+    }
+    typeInput.value = type;
+
+    if (type === 'income') {
+        modalTitle.textContent = 'Nova Receita';
+    } else if (type === 'expense') {
+        modalTitle.textContent = 'Nova Despesa';
+        typeGroup.style.display = 'block';
+        categoryGroup.style.display = 'block';
+        installmentsGroup.style.display = 'flex';
+        dueDateGroup.style.display = 'block';
+        cyclicGroup.style.display = 'flex';
+    } else if (type === 'shopping') {
+        modalTitle.textContent = 'Nova Compra com Mumbuca';
+        document.getElementById('description').placeholder = 'Nome do produto ou loja';
+    } else if (type === 'avulso') {
+        modalTitle.textContent = 'Nova Despesa Avulsa';
+        categoryGroup.style.display = 'block';
+        document.getElementById('description').placeholder = 'Ex: Mercado, Padaria, Farmácia';
+    }
+    
+    openModal(elements.addModal);
+}
+
+function setupEditModal(id, type) {
+    resetForms();
+    const item = currentMonthData[`${type}s`].find(i => i.id === id);
+    if (!item) return;
+
+    elements.editModalTitle.textContent = `Editar ${type === 'income' ? 'Receita' : 'Despesa'}`;
+    elements.editItemId.value = id;
+    elements.editItemType.value = type;
+    elements.editDescription.value = item.description;
+    elements.editAmount.value = formatCurrency(item.amount);
+
+    const isExpenseType = ['expenses', 'shopping', 'avulsos'].includes(type);
+    elements.editCategoryGroup.style.display = isExpenseType ? 'block' : 'none';
+    elements.editDueDateGroup.style.display = type === 'expenses' ? 'block' : 'none';
+    elements.editPaidDateGroup.style.display = isExpenseType && item.paid ? 'block' : 'none';
+    elements.editInstallmentsGroup.style.display = type === 'expenses' ? 'flex' : 'none';
+    elements.editInstallmentsInfo.style.display = type === 'expenses' && item.cyclic ? 'flex' : 'none';
+    
+    if (isExpenseType) {
+        elements.editCategory.value = item.category || '';
+        elements.editPaidDate.value = item.paidDate || '';
+    }
+    if (type === 'expenses') {
+        elements.editDueDate.value = item.dueDate || '';
+        elements.editCurrentInstallment.value = item.current || '';
+        elements.editTotalInstallments.value = item.total || '';
+    }
+
+    openModal(elements.editModal);
+}
+
+function setupGoalModal(id = null) {
+    resetForms();
+    if (id) {
+        const goal = currentMonthData.goals.find(g => g.id === id);
+        if (goal) {
+            elements.goalModalTitle.textContent = 'Editar Meta';
+            elements.goalId.value = goal.id;
+            elements.goalCategory.value = goal.category;
+            elements.goalAmount.value = formatCurrency(goal.amount);
+        }
+    } else {
+        elements.goalModalTitle.textContent = 'Nova Meta';
+    }
+    openModal(elements.goalModal);
+}
+
+function setupAccountModal(id = null) {
+    resetForms();
+    if (id) {
+        const account = currentMonthData.bankAccounts.find(a => a.id === id);
         if (account) {
             elements.accountModalTitle.textContent = 'Editar Conta';
             elements.accountId.value = account.id;
             elements.accountName.value = account.name;
-            elements.accountBalance.value = formatCurrency(account.balance).replace('R$', '').trim();
+            elements.accountBalance.value = formatCurrency(account.balance);
         }
     } else {
         elements.accountModalTitle.textContent = 'Nova Conta';
-        elements.accountId.value = '';
     }
-    elements.accountModal.classList.add('active');
+    openModal(elements.accountModal);
 }
 
-function handleAccountFormSubmit(event) {
-    event.preventDefault();
-    const formData = new FormData(elements.accountForm);
-    const id = formData.get('accountId');
-    const name = formData.get('accountName');
-    const balance = parseCurrency(formData.get('accountBalance'));
 
-    if (id) {
-        const account = currentMonthData.bankAccounts.find(a => a.id === id);
-        if (account) {
-            account.name = name;
-            account.balance = balance;
+// =================================================================================
+// EVENT HANDLERS
+// =================================================================================
+function handleAddFormSubmit(e) {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const formType = formData.get('formType');
+    
+    const newItem = {
+        id: `${formType}_${Date.now()}`,
+        description: formData.get('description'),
+        amount: parseCurrency(formData.get('amount')),
+        paid: false
+    };
+
+    if (formType === 'income') {
+        currentMonthData.incomes.push(newItem);
+    } else if (formType === 'expense') {
+        newItem.type = formData.get('type');
+        newItem.category = formData.get('category');
+        newItem.dueDate = formData.get('dueDate');
+        newItem.current = parseInt(formData.get('currentInstallment')) || null;
+        newItem.total = parseInt(formData.get('totalInstallments')) || null;
+        newItem.cyclic = formData.get('cyclic') === 'on';
+        currentMonthData.expenses.push(newItem);
+    } else if (formType === 'shopping') {
+        newItem.category = 'shopping'; // Hardcoded category
+        newItem.paid = true;
+        newItem.paidDate = new Date().toISOString().split('T')[0];
+        currentMonthData.shoppingItems.push(newItem);
+    } else if (formType === 'avulso') {
+        newItem.category = formData.get('category');
+        newItem.paid = true;
+        newItem.paidDate = new Date().toISOString().split('T')[0];
+        currentMonthData.avulsosItems.push(newItem);
+    }
+
+    saveData();
+    closeModal(elements.addModal);
+}
+
+function handleEditFormSubmit(e) {
+    e.preventDefault();
+    const id = elements.editItemId.value;
+    const type = elements.editItemType.value;
+    
+    const list = currentMonthData[`${type}s`];
+    const itemIndex = list.findIndex(i => i.id === id);
+    if (itemIndex === -1) return;
+
+    list[itemIndex].description = elements.editDescription.value;
+    list[itemIndex].amount = parseCurrency(elements.editAmount.value);
+
+    if (['expenses', 'shopping', 'avulsos'].includes(type)) {
+        list[itemIndex].category = elements.editCategory.value;
+        list[itemIndex].paidDate = elements.editPaidDate.value;
+    }
+    if (type === 'expenses') {
+        list[itemIndex].dueDate = elements.editDueDate.value;
+        list[itemIndex].current = parseInt(elements.editCurrentInstallment.value) || null;
+        list[itemIndex].total = parseInt(elements.editTotalInstallments.value) || null;
+    }
+
+    saveData();
+    closeModal(elements.editModal);
+}
+
+function handleGoalFormSubmit(e) {
+    e.preventDefault();
+    const id = elements.goalId.value;
+    const category = elements.goalCategory.value;
+    const amount = parseCurrency(elements.goalAmount.value);
+    
+    if (!category || !amount) {
+        alert("Por favor, preencha todos os campos.");
+        return;
+    }
+
+    if (id) { // Editing existing goal
+        const goalIndex = currentMonthData.goals.findIndex(g => g.id === id);
+        if (goalIndex > -1) {
+            currentMonthData.goals[goalIndex].category = category;
+            currentMonthData.goals[goalIndex].amount = amount;
         }
-    } else {
-        currentMonthData.bankAccounts.push({ id: `acc_${Date.now()}`, name, balance });
+    } else { // Adding new goal
+        if (currentMonthData.goals.some(g => g.category === category)) {
+            alert('Já existe uma meta para esta categoria.');
+            return;
+        }
+        const newGoal = {
+            id: `goal_${category}_${Date.now()}`,
+            category,
+            amount
+        };
+        currentMonthData.goals.push(newGoal);
+    }
+    
+    saveData();
+    closeModal(elements.goalModal);
+}
+
+function handleAccountFormSubmit(e) {
+    e.preventDefault();
+    const id = elements.accountId.value;
+    const name = elements.accountName.value;
+    const balance = parseCurrency(elements.accountBalance.value);
+    
+    if (!name) {
+        alert("Por favor, preencha o nome da conta.");
+        return;
+    }
+
+    if (id) { // Editing
+        const accIndex = currentMonthData.bankAccounts.findIndex(a => a.id === id);
+        if (accIndex > -1) {
+            currentMonthData.bankAccounts[accIndex].name = name;
+            currentMonthData.bankAccounts[accIndex].balance = balance;
+        }
+    } else { // Adding
+        const newAccount = { id: `acc_${Date.now()}`, name, balance };
+        currentMonthData.bankAccounts.push(newAccount);
     }
     saveData();
     closeModal(elements.accountModal);
 }
 
-function deleteAccount(accountId) {
-    if (!confirm('Tem certeza que deseja excluir esta conta?')) return;
-    currentMonthData.bankAccounts = currentMonthData.bankAccounts.filter(a => a.id !== accountId);
+
+async function handleAiChatFormSubmit(e) {
+    e.preventDefault();
+    const prompt = elements.aiChatInput.value.trim();
+    if (!prompt) return;
+
+    elements.aiChatInput.value = '';
+    addMessageToChatUI(prompt, 'user');
+
+    const loadingBubble = addMessageToChatUI('...', 'ai');
+
+    if (!chat) {
+        initializeChat();
+    }
+    
+    const financialContext = `
+        **Resumo Financeiro de ${getMonthName(currentMonth)}/${currentYear}:**
+        - **Receitas:** Total de ${formatCurrency(calculateTotals().totalIncome)}. Principais fontes: ${currentMonthData.incomes.map(i => i.description).join(', ')}.
+        - **Despesas Fixas e Variáveis:** Total de ${formatCurrency(currentMonthData.expenses.reduce((s, i) => s + i.amount, 0))}.
+        - **Compras com Mumbuca:** Total de ${formatCurrency(currentMonthData.shoppingItems.reduce((s, i) => s + i.amount, 0))}.
+        - **Despesas Avulsas:** Total de ${formatCurrency(currentMonthData.avulsosItems.reduce((s, i) => s + i.amount, 0))}.
+        - **Saldo Atual:** ${formatCurrency(calculateTotals().finalBalance)}.
+        - **Metas de Gastos:** ${currentMonthData.goals.map(g => `${SPENDING_CATEGORIES[g.category]?.name}: ${formatCurrency(g.amount)}`).join(', ')}.
+    `;
+    
+    const fullPrompt = `${financialContext}\n\n**Pergunta do usuário:** ${prompt}`;
+
+    try {
+        const result = await chat.sendMessage(fullPrompt);
+        const response = await result.response;
+        const text = response.text();
+        loadingBubble.innerHTML = simpleMarkdownToHtml(text);
+    } catch (error) {
+        console.error("Gemini API error:", error);
+        loadingBubble.innerHTML = "Desculpe, não consegui processar sua pergunta. Tente novamente.";
+    }
+}
+
+
+function handleDelete(id, type, listName) {
+    if (confirm(`Tem certeza que deseja excluir este item?`)) {
+        currentMonthData[listName] = currentMonthData[listName].filter(item => item.id !== id);
+        saveData();
+    }
+}
+
+function handleTogglePaid(id, type) {
+    const list = currentMonthData[`${type}s`];
+    const item = list.find(i => i.id === id);
+    if (!item) return;
+
+    item.paid = !item.paid;
+    if (item.paid) {
+        item.paidDate = new Date().toISOString().split('T')[0];
+    } else {
+        item.paidDate = null;
+    }
+    
     saveData();
 }
 
-async function openAiModal() {
-    elements.aiModal.classList.add('active');
-    
-    if (!chat) {
-        elements.aiAnalysis.innerHTML = '<div class="ai-message"><div class="message-bubble">Iniciando assistente de IA...</div></div>';
+// =================================================================================
+// AI CHAT
+// =================================================================================
+function initializeChat() {
+    try {
+        const model = 'gemini-2.5-flash';
+        chat = ai.chats.create({
+            model,
+            config: {
+                systemInstruction: "Você é um assistente financeiro amigável e prestativo para um aplicativo de finanças pessoais. Seu nome é 'Finanças AI'. Analise os dados fornecidos e responda às perguntas do usuário de forma clara, concisa e com dicas úteis. Use formatação markdown simples, como **negrito**, para destacar pontos importantes. Não use cabeçalhos (#). Seja sempre positivo e encorajador.",
+            },
+        });
         
-        const financialSummary = `
-            **Resumo Financeiro de ${getMonthName(currentMonth)} ${currentYear}:**
-            - **Receita Total:** ${formatCurrency((currentMonthData.incomes || []).reduce((s, i) => s + i.amount, 0))}
-            - **Despesas Totais:** ${formatCurrency([...(currentMonthData.expenses || []), ...(currentMonthData.shoppingItems || []), ...(currentMonthData.avulsosItems || [])].reduce((s, e) => s + e.amount, 0))}
-            - **Saldo Final Previsto:** ${elements.finalBalance.textContent}
-            - **Despesas Pendentes:** ${(currentMonthData.expenses || []).filter(e => !e.paid).length} itens.
-        `;
-
-        try {
-            chat = ai.chats.create({
-                model: 'gemini-2.5-flash',
-                config: {
-                    systemInstruction: `Você é um assistente financeiro especialista em finanças pessoais para brasileiros. Seu nome é Fin. Analise os dados fornecidos e responda às perguntas do usuário de forma clara, objetiva e amigável. Use emojis para tornar a conversa mais leve. O resumo financeiro do mês atual é:\n${financialSummary}`
-                }
-            });
-            const response = await chat.sendMessage({ message: "Faça uma breve análise da minha situação financeira este mês e me dê uma dica importante." });
-            elements.aiAnalysis.innerHTML = `<div class="ai-message"><div class="message-bubble">${simpleMarkdownToHtml(response.text)}</div></div>`;
-        } catch (error) {
-            console.error("Gemini API Error:", error);
-            elements.aiAnalysis.innerHTML = '<div class="ai-message"><div class="message-bubble">Desculpe, não consegui me conectar. Verifique se a chave de API está configurada corretamente.</div></div>';
-        }
+        const welcomeMessage = `Olá! Sou o Finanças AI. Como posso ajudar a analisar suas finanças de ${getMonthName(currentMonth)}?`;
+        addMessageToChatUI(welcomeMessage, 'ai');
+    } catch(e) {
+        console.error(e);
+        addMessageToChatUI("Não foi possível iniciar a Análise IA. Verifique a configuração da sua chave de API.", 'ai');
     }
 }
 
-async function sendAiChatMessage(event) {
-    event.preventDefault();
-    if (!chat) return;
-
-    const userInput = elements.aiChatInput.value.trim();
-    if (!userInput) return;
+function addMessageToChatUI(message, sender) {
+    const messageEl = document.createElement('div');
+    messageEl.className = `chat-message ${sender}-message`;
     
-    elements.aiAnalysis.innerHTML += `<div class="user-message"><div class="message-bubble">${userInput}</div></div>`;
-    elements.aiChatInput.value = '';
-    elements.aiChatForm.querySelector('button').disabled = true;
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble';
+    bubble.innerHTML = simpleMarkdownToHtml(message);
     
-    const typingIndicator = document.createElement('div');
-    typingIndicator.className = 'ai-message';
-    typingIndicator.innerHTML = `<div class="message-bubble">Fin está digitando...</div>`;
-    elements.aiAnalysis.appendChild(typingIndicator);
+    messageEl.appendChild(bubble);
+    elements.aiAnalysis.appendChild(messageEl);
     elements.aiAnalysis.scrollTop = elements.aiAnalysis.scrollHeight;
     
-    try {
-        const response = await chat.sendMessage({ message: userInput });
-        typingIndicator.remove();
-        elements.aiAnalysis.innerHTML += `<div class="ai-message"><div class="message-bubble">${simpleMarkdownToHtml(response.text)}</div></div>`;
-    } catch (error) {
-        typingIndicator.innerHTML = `<div class="message-bubble">Ocorreu um erro. Tente novamente.</div>`;
-    } finally {
-        elements.aiChatForm.querySelector('button').disabled = false;
-        elements.aiAnalysis.scrollTop = elements.aiAnalysis.scrollHeight;
+    return bubble;
+}
+
+
+// =================================================================================
+// FIREBASE AUTH & SYNC UI
+// =================================================================================
+function updateSyncButtonState() {
+    const syncBtn = elements.syncBtn;
+    syncBtn.classList.remove('syncing', 'unsynced', 'sync-error');
+    switch (syncStatus) {
+        case 'disconnected':
+            syncBtn.innerHTML = ICONS.cloudOff;
+            syncBtn.title = "Sincronização desativada (Firebase não configurado)";
+            syncBtn.disabled = true;
+            break;
+        case 'syncing':
+            syncBtn.innerHTML = ICONS.sync;
+            syncBtn.title = "Sincronizando...";
+            syncBtn.classList.add('syncing');
+            syncBtn.disabled = true;
+            break;
+        case 'synced':
+            syncBtn.innerHTML = ICONS.cloudCheck;
+            syncBtn.title = "Dados salvos na nuvem";
+            syncBtn.disabled = true;
+            break;
+        case 'error':
+            syncBtn.innerHTML = ICONS.cloudOff;
+            syncBtn.title = "Erro na sincronização";
+            syncBtn.classList.add('sync-error');
+            syncBtn.disabled = false;
+            break;
+        default:
+             syncBtn.innerHTML = ICONS.cloudUp;
+             syncBtn.title = "Sincronizar manualmente";
+             syncBtn.disabled = false;
     }
 }
 
-function createPieChart() {
-    const expenses = [...(currentMonthData.expenses || []), ...(currentMonthData.shoppingItems || []), ...(currentMonthData.avulsosItems || [])];
-    const total = expenses.reduce((sum, item) => sum + item.amount, 0);
-
-    const categoryTotals = expenses.reduce((acc, item) => {
-        const categoryKey = item.category || 'outros';
-        acc[categoryKey] = (acc[categoryKey] || 0) + item.amount;
-        return acc;
-    }, {});
-    
-    const sortedCategories = Object.entries(categoryTotals).sort(([, a], [, b]) => b - a);
-
-    const colors = ['#14b8a6', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#10b981', '#60a5fa', '#f97316', '#ec4899', '#64748b'];
-    
-    let gradientParts = [];
-    let currentAngle = 0;
-    
-    const legendItems = sortedCategories.map(([key, value], index) => {
-        const percentage = (value / total) * 100;
-        const color = colors[index % colors.length];
-        gradientParts.push(`${color} ${currentAngle}deg ${currentAngle + percentage * 3.6}deg`);
-        currentAngle += percentage * 3.6;
-
-        return `
-            <div class="legend-item">
-                <div class="legend-label">
-                    <div class="legend-color" style="background-color: ${color};"></div>
-                    <span>${SPENDING_CATEGORIES[key]?.name || 'Outros'}</span>
-                </div>
-                <div class="legend-value">
-                    ${formatCurrency(value)}
-                    <span class="legend-percentage">(${percentage.toFixed(1)}%)</span>
-                </div>
-            </div>
-        `;
-    }).join('');
-
-    const conicGradient = `conic-gradient(${gradientParts.join(', ')})`;
-    
-    return `
-        <div class="pie-chart-container">
-            <div class="pie-chart" style="background: ${conicGradient};"></div>
-            <div class="pie-chart-legend">${legendItems}</div>
-        </div>
-    `;
+function updateLastSyncTime(isSuccess) {
+    if (isSuccess) {
+        const time = new Date().toLocaleTimeString('pt-BR');
+        localStorage.setItem('lastSyncSuccess', time);
+    }
 }
 
+function updateSyncStatusUI() {
+    const statusTextEl = document.getElementById('sync-status-text');
+    const userIdTextEl = document.getElementById('user-id-text');
+    const userIdContainer = document.getElementById('user-id-container');
+    const syncInfoEl = document.getElementById('sync-status-info');
+
+    syncInfoEl.innerHTML = '';
+    
+    if (!isConfigured) {
+        statusTextEl.textContent = 'Desconectado';
+        statusTextEl.style.color = 'var(--text-light)';
+        userIdContainer.style.display = 'none';
+        syncInfoEl.innerHTML = `A sincronização na nuvem está desativada. Para habilitar, siga as instruções no arquivo <code>firebase-config.js</code> e cole suas chaves de API do Firebase.`;
+        return;
+    }
+
+    if (currentUser) {
+        statusTextEl.textContent = 'Conectado e Sincronizado';
+        statusTextEl.style.color = 'var(--success)';
+        userIdTextEl.textContent = currentUser.uid.substring(0, 12) + '...';
+        userIdContainer.style.display = 'block';
+        syncInfoEl.innerHTML = `Seus dados são salvos automaticamente na nuvem, permitindo o acesso de qualquer dispositivo.`;
+    } else {
+        statusTextEl.textContent = 'Não conectado';
+        statusTextEl.style.color = 'var(--warning)';
+        userIdContainer.style.display = 'none';
+        syncInfoEl.innerHTML = 'Não foi possível conectar à nuvem. Verifique sua conexão ou a configuração do Firebase.';
+    }
+}
+
+
+function initFirebaseAuth() {
+    if (!isConfigured) {
+        syncStatus = 'disconnected';
+        updateSyncButtonState();
+        updateSyncStatusUI();
+        // Even if not configured, load the initial local data
+        currentMonthData = initialMonthData;
+        updateUI();
+        return;
+    }
+
+    onAuthStateChanged(auth, async (user) => {
+        if (user) {
+            currentUser = user;
+            syncStatus = 'synced'; // Assume synced on login
+            console.log("Authenticated anonymously:", user.uid);
+            await showInitialDataAndSync(); // This is the new entry point
+        } else {
+            currentUser = null;
+            syncStatus = 'error';
+            console.log("No user signed in. Attempting to sign in anonymously.");
+            try {
+                await signInAnonymously(auth);
+            } catch (error) {
+                console.error("Anonymous sign-in failed:", error);
+                syncStatus = 'error';
+            }
+        }
+        updateSyncButtonState();
+        updateSyncStatusUI();
+    });
+}
+
+// =================================================================================
+// PWA INSTALL BANNER
+// =================================================================================
 function setupPwaInstall() {
     const installBanner = document.getElementById('pwa-install-banner');
     const installBtn = document.getElementById('pwa-install-btn');
@@ -1334,7 +1321,9 @@ function setupPwaInstall() {
         if (deferredPrompt) {
             deferredPrompt.prompt();
             const { outcome } = await deferredPrompt.userChoice;
-            console.log(`User response to the install prompt: ${outcome}`);
+            if (outcome === 'accepted') {
+                console.log('User accepted the A2HS prompt');
+            }
             deferredPrompt = null;
             installBanner.classList.remove('visible');
         }
@@ -1343,150 +1332,127 @@ function setupPwaInstall() {
     dismissBtn.addEventListener('click', () => {
         installBanner.classList.remove('visible');
     });
-
-    window.addEventListener('appinstalled', () => {
-        deferredPrompt = null;
-        installBanner.classList.remove('visible');
-        console.log('PWA was installed');
-    });
 }
-function setupEventListeners() {
-    // Navigation
+
+
+// =================================================================================
+// APP INITIALIZATION & EVENT LISTENERS
+// =================================================================================
+function addEventListeners() {
+    // Month navigation
+    document.getElementById('prevMonthBtn').addEventListener('click', () => changeMonth('prev'));
+    document.getElementById('nextMonthBtn').addEventListener('click', () => changeMonth('next'));
+    
+    // Tab bar navigation
     elements.tabBar.addEventListener('click', (e) => {
         const tabBtn = e.target.closest('.tab-btn');
-        if (tabBtn && tabBtn.dataset.view) {
-            navigateTo(tabBtn.dataset.view);
+        if (!tabBtn) return;
+        
+        if (tabBtn.id === 'openAiModalBtnTab') {
+            openModal(elements.aiModal);
+            if (!chat) initializeChat();
+            return;
         }
-    });
-    
-    document.getElementById('openAiModalBtnTab').onclick = openAiModal;
-    
-    elements.segmentedBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            elements.segmentedBtns.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            
-            const listId = btn.dataset.list;
-            document.querySelectorAll('.items-list').forEach(list => {
-                list.style.display = list.id === listId ? 'block' : 'none';
-            });
 
-            document.querySelectorAll('#list-actions .btn').forEach(actionBtn => {
-                actionBtn.style.display = 'none';
-            });
-            
-            if (listId === 'incomesList') document.getElementById('openAddIncomeModalBtn').style.display = 'flex';
-            if (listId === 'expensesList') document.getElementById('openAddExpenseModalBtn').style.display = 'flex';
-            if (listId === 'shoppingList') document.getElementById('openAddShoppingModalBtn').style.display = 'flex';
-            if (listId === 'avulsosList') document.getElementById('openAddAvulsoModalBtn').style.display = 'flex';
-        });
+        const viewId = `view-${tabBtn.dataset.view}`;
+        elements.tabButtons.forEach(btn => btn.classList.remove('active'));
+        tabBtn.classList.add('active');
+        elements.appViews.forEach(view => view.classList.remove('active'));
+        document.getElementById(viewId).classList.add('active');
     });
 
-    // Month Change
-    document.getElementById('prevMonthBtn').onclick = () => changeMonth(-1);
-    document.getElementById('nextMonthBtn').onclick = () => changeMonth(1);
-    
-    // Modal Openers
-    document.getElementById('openAddIncomeModalBtn').onclick = () => openAddModal('incomes');
-    document.getElementById('openAddExpenseModalBtn').onclick = () => openAddModal('expenses');
-    document.getElementById('openAddShoppingModalBtn').onclick = () => openAddModal('shoppingItems');
-    document.getElementById('openAddAvulsoModalBtn').onclick = () => openAddModal('avulsosItems');
-    document.getElementById('openAddGoalModalBtn').onclick = () => openGoalModal();
-    document.getElementById('openAddAccountModalBtn').onclick = () => openAccountModal();
+    // Segmented control for lists
+    document.querySelector('.segmented-control').addEventListener('click', (e) => {
+        const segBtn = e.target.closest('.segmented-btn');
+        if (!segBtn) return;
 
-    // Modal Closers & Cancel
-    document.getElementById('closeAddModalBtn').onclick = () => closeModal(elements.addModal);
-    document.getElementById('cancelAddBtn').onclick = () => closeModal(elements.addModal);
-    document.getElementById('closeEditModalBtn').onclick = () => closeModal(elements.editModal);
-    document.getElementById('cancelEditBtn').onclick = () => closeModal(elements.editModal);
-    document.getElementById('closeAiModalBtn').onclick = () => closeModal(elements.aiModal);
-    document.getElementById('closeGoalModalBtn').onclick = () => closeModal(elements.goalModal);
-    document.getElementById('cancelGoalBtn').onclick = () => closeModal(elements.goalModal);
-    document.getElementById('closeAccountModalBtn').onclick = () => closeModal(elements.accountModal);
-    document.getElementById('cancelAccountBtn').onclick = () => closeModal(elements.accountModal);
+        const listId = segBtn.dataset.list;
+        elements.segmentedBtns.forEach(btn => btn.classList.remove('active'));
+        segBtn.classList.add('active');
+        
+        document.querySelectorAll('.items-list').forEach(list => list.style.display = 'none');
+        document.getElementById(listId).style.display = 'block';
+
+        document.querySelectorAll('#list-actions .btn').forEach(btn => btn.style.display = 'none');
+        if (listId === 'incomesList') document.getElementById('openAddIncomeModalBtn').style.display = 'flex';
+        else if (listId === 'expensesList') document.getElementById('openAddExpenseModalBtn').style.display = 'flex';
+        else if (listId === 'shoppingList') document.getElementById('openAddShoppingModalBtn').style.display = 'flex';
+        else if (listId === 'avulsosList') document.getElementById('openAddAvulsoModalBtn').style.display = 'flex';
+    });
+    
+    // Open Modals
+    document.getElementById('openAddIncomeModalBtn').addEventListener('click', () => setupAddModal('income'));
+    document.getElementById('openAddExpenseModalBtn').addEventListener('click', () => setupAddModal('expense'));
+    document.getElementById('openAddShoppingModalBtn').addEventListener('click', () => setupAddModal('shopping'));
+    document.getElementById('openAddAvulsoModalBtn').addEventListener('click', () => setupAddModal('avulso'));
+    document.getElementById('openAddGoalModalBtn').addEventListener('click', () => setupGoalModal());
+    document.getElementById('openAddAccountModalBtn').addEventListener('click', () => setupAccountModal());
+
+    // Close Modals
+    document.getElementById('closeAddModalBtn').addEventListener('click', () => closeModal(elements.addModal));
+    document.getElementById('cancelAddBtn').addEventListener('click', () => closeModal(elements.addModal));
+    document.getElementById('closeEditModalBtn').addEventListener('click', () => closeModal(elements.editModal));
+    document.getElementById('cancelEditBtn').addEventListener('click', () => closeModal(elements.editModal));
+    document.getElementById('closeAiModalBtn').addEventListener('click', () => closeModal(elements.aiModal));
+    document.getElementById('closeGoalModalBtn').addEventListener('click', () => closeModal(elements.goalModal));
+    document.getElementById('cancelGoalBtn').addEventListener('click', () => closeModal(elements.goalModal));
+    document.getElementById('closeAccountModalBtn').addEventListener('click', () => closeModal(elements.accountModal));
+    document.getElementById('cancelAccountBtn').addEventListener('click', () => closeModal(elements.accountModal));
 
     // Form Submissions
-    elements.addForm.addEventListener('submit', handleFormSubmit);
+    elements.addForm.addEventListener('submit', handleAddFormSubmit);
     elements.editForm.addEventListener('submit', handleEditFormSubmit);
-    elements.aiChatForm.addEventListener('submit', sendAiChatMessage);
     elements.goalForm.addEventListener('submit', handleGoalFormSubmit);
     elements.accountForm.addEventListener('submit', handleAccountFormSubmit);
-    
-    // Currency formatting on input
-    ['amount', 'editAmount', 'goalAmount', 'accountBalance'].forEach(id => {
-        const input = document.getElementById(id);
-        if(input) {
-            input.addEventListener('input', (e) => {
-                const value = e.target.value.replace(/\D/g, '');
-                if (value) {
-                    const numberValue = parseInt(value, 10) / 100;
-                    e.target.value = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2 }).format(numberValue);
-                } else {
-                    e.target.value = '';
-                }
-            });
+    elements.aiChatForm.addEventListener('submit', handleAiChatFormSubmit);
+
+    // Dynamic list item actions (event delegation)
+    document.querySelector('.lists-container').addEventListener('click', e => {
+        const checkBtn = e.target.closest('.check-btn');
+        const editBtn = e.target.closest('.edit-btn');
+        const deleteBtn = e.target.closest('.delete-btn');
+        
+        if (checkBtn) {
+            handleTogglePaid(checkBtn.dataset.id, checkBtn.dataset.type);
+        } else if (editBtn) {
+            setupEditModal(editBtn.dataset.id, editBtn.dataset.type);
+        } else if (deleteBtn) {
+            const type = deleteBtn.dataset.type;
+            const listName = `${type}s`;
+            handleDelete(deleteBtn.dataset.id, type, listName);
         }
     });
 
-    // Toggle cyclic based on type for expenses
-    const typeSelect = document.getElementById('type');
-    if (typeSelect) {
-        typeSelect.addEventListener('change', (e) => {
-            const isFixed = e.target.value === 'fixed';
-            document.getElementById('cyclicGroup').style.display = isFixed ? 'flex' : 'none';
+    elements.goalsList.addEventListener('click', e => {
+        const editBtn = e.target.closest('.edit-goal-btn');
+        const deleteBtn = e.target.closest('.delete-goal-btn');
+        if (editBtn) setupGoalModal(editBtn.dataset.id);
+        if (deleteBtn) handleDelete(deleteBtn.dataset.id, 'goal', 'goals');
+    });
+    
+    elements.bankAccountsList.addEventListener('click', e => {
+        const editBtn = e.target.closest('.edit-account-btn');
+        const deleteBtn = e.target.closest('.delete-account-btn');
+        if (editBtn) setupAccountModal(editBtn.dataset.id);
+        if (deleteBtn) handleDelete(deleteBtn.dataset.id, 'account', 'bankAccounts');
+    });
+
+    // Format currency inputs on blur
+    ['amount', 'editAmount', 'goalAmount', 'accountBalance'].forEach(id => {
+        document.getElementById(id).addEventListener('blur', e => {
+            const value = parseCurrency(e.target.value);
+            e.target.value = formatCurrency(value);
         });
-    }
+    });
+
+    elements.syncBtn.addEventListener('click', saveDataToFirestore);
 }
 
 function initApp() {
-    console.log("App initializing...");
-    setupPwaInstall();
     populateCategorySelects();
-    setupEventListeners();
-
-    if (!isConfigured) {
-        syncStatus = 'error';
-        syncErrorDetails = `A sincronização na nuvem não está configurada. Siga as instruções no arquivo <code>firebase-config.js</code> para habilitar.`;
-        updateSyncButtonState();
-        updateProfilePage();
-        alert("Atenção: O Firebase não está configurado. O app funcionará apenas localmente, sem salvar seus dados na nuvem.");
-        return;
-    }
-
-    onAuthStateChanged(auth, async (user) => {
-        if (user) {
-            currentUser = user;
-            console.log("Usuário anônimo autenticado:", user.uid);
-            
-            // Special one-time override for November 2025 data correction
-            const novemberKey = '2025-11';
-            const docRef = doc(db, 'users', currentUser.uid, 'months', novemberKey);
-            const docSnap = await getDoc(docRef);
-            
-            // If Nov data doesn't exist OR it's empty (from a previous bug)
-            if (!docSnap.exists() || !docSnap.data().incomes || docSnap.data().incomes.length === 0) {
-                 console.log("[Data Correction] Forcing initial data for November 2025.");
-                 await setDoc(docRef, initialMonthData);
-            }
-            
-            currentYear = 2025;
-            currentMonth = 11;
-            loadDataForCurrentMonth();
-        } else {
-            console.log("Nenhum usuário logado. Tentando login anônimo...");
-            signInAnonymously(auth).catch((error) => {
-                console.error("Falha no login anônimo:", error);
-                syncStatus = 'error';
-                if (error.code === 'auth/configuration-not-found') {
-                    syncErrorDetails = `<strong>Erro de Configuração:</strong> O método de login "Anônimo" não está ativado no seu projeto Firebase. <br>1. Acesse o <a href="https://console.firebase.google.com/u/0/project/${firebaseConfig.projectId}/authentication/providers" target="_blank">Painel do Firebase</a>. <br>2. Vá para a aba "Método de login". <br>3. Ative o provedor "Anônimo" e salve.`;
-                } else {
-                    syncErrorDetails = `Ocorreu um erro inesperado na autenticação. (${error.code})`;
-                }
-                 updateSyncButtonState();
-                 updateProfilePage();
-            });
-        }
-    });
+    addEventListeners();
+    setupPwaInstall();
+    initFirebaseAuth();
 }
-// Run the app
+
 document.addEventListener('DOMContentLoaded', initApp);

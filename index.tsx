@@ -50,7 +50,7 @@ const SPENDING_CATEGORIES = {
 // =================================================================================
 // INITIAL DATA (SOURCE OF TRUTH FOR NOVEMBER 2025)
 // =================================================================================
-const CORRECT_DATA_VERSION = "v1.1-nov2025-final";
+const CORRECT_DATA_VERSION = "v1.2-nov2025-final";
 const initialMonthData = {
     dataVersion: CORRECT_DATA_VERSION,
     incomes: [
@@ -343,15 +343,18 @@ function saveData() {
     saveDataToFirestore();
 }
 
-async function loadMonthData() {
+async function loadMonthData(isInitialLoad = false) {
     if (!currentUser || !isConfigured) {
         console.warn("Firebase not configured or no user. Cannot load cloud data.");
-        // We already loaded local data, so we can just stop here.
+        if (isInitialLoad) {
+            currentMonthData = initialMonthData;
+            updateUI();
+        }
         return;
     }
 
     if (firestoreUnsubscribe) {
-        firestoreUnsubscribe(); // Detach old listener before fetching new month
+        firestoreUnsubscribe();
     }
 
     const monthKey = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
@@ -359,8 +362,15 @@ async function loadMonthData() {
     
     try {
         const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-            console.log(`[Data] Found data for ${monthKey} in cloud.`);
+
+        // Guardian logic: Check if cloud data is valid. If not, force overwrite.
+        if (isInitialLoad && monthKey === '2025-11' && (!docSnap.exists() || docSnap.data().dataVersion !== CORRECT_DATA_VERSION)) {
+            console.log(`[Guardian] Cloud data for ${monthKey} is invalid or missing. Forcing overwrite.`);
+            currentMonthData = initialMonthData;
+            await setDoc(docRef, initialMonthData); // Force save correct data
+            console.log(`[Guardian] Overwrite complete for ${monthKey}.`);
+        } else if (docSnap.exists()) {
+            console.log(`[Data] Found valid data for ${monthKey} in cloud.`);
             currentMonthData = docSnap.data();
         } else {
             console.log(`[Data] No data for ${monthKey}, creating new month.`);
@@ -369,10 +379,13 @@ async function loadMonthData() {
     } catch(error) {
         console.error(`[Data] Error fetching month ${monthKey}:`, error);
         syncStatus = 'error';
+        if (isInitialLoad) { // Fallback to local data if initial cloud fetch fails
+            currentMonthData = initialMonthData;
+        }
     } finally {
         updateUI();
         updateMonthDisplay();
-        attachFirestoreListener(); // Re-attach listener for the current month
+        attachFirestoreListener();
     }
 }
 
@@ -914,7 +927,7 @@ function setupAddModal(type) {
 
 function setupEditModal(id, type) {
     resetForms();
-    const item = (currentMonthData[`${type}s`] || []).find(i => i.id === id);
+    const item = (currentMonthData[`${type}s`] || currentMonthData[`${type}Items`] || []).find(i => i.id === id);
     if (!item) return;
 
     elements.editModalTitle.textContent = `Editar ${type === 'income' ? 'Receita' : 'Despesa'}`;
@@ -1022,7 +1035,8 @@ function handleEditFormSubmit(e) {
     const id = elements.editItemId.value;
     const type = elements.editItemType.value;
     
-    const list = currentMonthData[`${type}s`];
+    const listName = type.endsWith('e') ? `${type}s` : `${type}Items`;
+    const list = currentMonthData[listName];
     const itemIndex = list.findIndex(i => i.id === id);
     if (itemIndex === -1) return;
 
@@ -1158,7 +1172,8 @@ function handleDelete(id, type, listName) {
 }
 
 function handleTogglePaid(id, type) {
-    const list = currentMonthData[`${type}s`];
+    const listName = type.endsWith('e') ? `${type}s` : `${type}Items`;
+    const list = currentMonthData[listName];
     const item = list.find(i => i.id === id);
     if (!item) return;
 
@@ -1275,6 +1290,7 @@ async function initFirebaseAuth() {
         syncStatus = 'disconnected';
         updateSyncButtonState();
         updateSyncStatusUI();
+        // Even without firebase, the app works locally with initialMonthData.
         return;
     }
 
@@ -1282,23 +1298,7 @@ async function initFirebaseAuth() {
         if (user) {
             currentUser = user;
             console.log("Authenticated anonymously:", user.uid);
-            
-            // --- FOOLPROOF DATA CORRECTION ---
-            const monthKey = '2025-11';
-            const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
-            const forceSyncFlag = `force_sync_flag_${CORRECT_DATA_VERSION}`;
-
-            if (!localStorage.getItem(forceSyncFlag)) {
-                 console.log(`FLAG NOT FOUND. Forcing overwrite of ${monthKey} in Firestore.`);
-                 await setDoc(docRef, initialMonthData);
-                 localStorage.setItem(forceSyncFlag, 'true');
-                 console.log("Overwrite complete. Flag set.");
-            }
-            // --- END OF CORRECTION ---
-
-            // Now that data is guaranteed to be correct, load it for the current view.
-            await loadMonthData();
-
+            await loadMonthData(true); // Pass true for initial load
         } else {
             currentUser = null;
             syncStatus = 'error';
@@ -1311,6 +1311,9 @@ async function initFirebaseAuth() {
                 syncStatus = 'error';
                 updateSyncButtonState();
                 updateSyncStatusUI();
+                 // Fallback to local data if sign-in fails
+                currentMonthData = initialMonthData;
+                updateUI();
             }
         }
     });
@@ -1428,10 +1431,12 @@ function addEventListeners() {
         if (checkBtn) {
             handleTogglePaid(checkBtn.dataset.id, checkBtn.dataset.type);
         } else if (editBtn) {
-            setupEditModal(editBtn.dataset.id, editBtn.dataset.type);
+            const type = editBtn.dataset.type;
+            const itemType = type.slice(0, -1); // 'incomes' -> 'income'
+            setupEditModal(editBtn.dataset.id, type);
         } else if (deleteBtn) {
             const type = deleteBtn.dataset.type;
-            const listName = `${type}s`;
+            const listName = type.endsWith('e') ? `${type}s` : `${type}Items`;
             handleDelete(deleteBtn.dataset.id, type, listName);
         }
     });

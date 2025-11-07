@@ -343,18 +343,16 @@ function saveData() {
     saveDataToFirestore();
 }
 
-async function loadMonthData(isInitialLoad = false) {
-    if (!currentUser || !isConfigured) {
-        console.warn("Firebase not configured or no user. Cannot load cloud data.");
-        if (isInitialLoad) {
-            currentMonthData = initialMonthData;
-            updateUI();
-        }
-        return;
-    }
-
+async function loadMonthData() {
     if (firestoreUnsubscribe) {
         firestoreUnsubscribe();
+        firestoreUnsubscribe = null;
+    }
+
+    if (!currentUser || !isConfigured) {
+        console.warn("Firebase not configured or no user. Cannot load cloud data.");
+        updateUI(); // Render with whatever data is currently in state
+        return;
     }
 
     const monthKey = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
@@ -363,13 +361,7 @@ async function loadMonthData(isInitialLoad = false) {
     try {
         const docSnap = await getDoc(docRef);
 
-        // Guardian logic: Check if cloud data is valid. If not, force overwrite.
-        if (isInitialLoad && monthKey === '2025-11' && (!docSnap.exists() || docSnap.data().dataVersion !== CORRECT_DATA_VERSION)) {
-            console.log(`[Guardian] Cloud data for ${monthKey} is invalid or missing. Forcing overwrite.`);
-            currentMonthData = initialMonthData;
-            await setDoc(docRef, initialMonthData); // Force save correct data
-            console.log(`[Guardian] Overwrite complete for ${monthKey}.`);
-        } else if (docSnap.exists()) {
+        if (docSnap.exists()) {
             console.log(`[Data] Found valid data for ${monthKey} in cloud.`);
             currentMonthData = docSnap.data();
         } else {
@@ -379,9 +371,6 @@ async function loadMonthData(isInitialLoad = false) {
     } catch(error) {
         console.error(`[Data] Error fetching month ${monthKey}:`, error);
         syncStatus = 'error';
-        if (isInitialLoad) { // Fallback to local data if initial cloud fetch fails
-            currentMonthData = initialMonthData;
-        }
     } finally {
         updateUI();
         updateMonthDisplay();
@@ -391,7 +380,7 @@ async function loadMonthData(isInitialLoad = false) {
 
 
 function attachFirestoreListener() {
-    if (!currentUser || !isConfigured) return;
+    if (!currentUser || !isConfigured || firestoreUnsubscribe) return;
     
     const monthKey = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
     const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
@@ -400,7 +389,7 @@ function attachFirestoreListener() {
         if (docSnap.exists()) {
             console.log(`[Firestore Listener] Real-time update for ${monthKey}`);
             currentMonthData = docSnap.data();
-            updateUI(); // Update UI with fresh data from the cloud
+            updateUI();
         }
     }, (error) => {
         console.error("Error with Firestore listener:", error);
@@ -427,9 +416,8 @@ async function createNewMonthData() {
         }
     }
 
-    // Fallback if no cloud data is found for the previous month
     if (!baseData) {
-        baseData = initialMonthData; // Use the base data as a template
+        baseData = initialMonthData;
     }
     
     const clonedBankAccounts = (baseData.bankAccounts || []).map(acc => ({...acc}));
@@ -494,7 +482,7 @@ function changeMonth(direction) {
             currentYear--;
         }
     }
-    loadMonthData(); // This will handle fetching or creating the new month's data
+    loadMonthData();
 }
 
 // =================================================================================
@@ -1290,33 +1278,54 @@ async function initFirebaseAuth() {
         syncStatus = 'disconnected';
         updateSyncButtonState();
         updateSyncStatusUI();
-        // Even without firebase, the app works locally with initialMonthData.
         return;
     }
 
-    onAuthStateChanged(auth, async (user) => {
-        if (user) {
-            currentUser = user;
-            console.log("Authenticated anonymously:", user.uid);
-            await loadMonthData(true); // Pass true for initial load
-        } else {
-            currentUser = null;
-            syncStatus = 'error';
-            console.log("No user. Attempting to sign in anonymously.");
+    const authCheckPromise = new Promise((resolve) => {
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUser = user;
+                console.log("Authenticated anonymously:", user.uid);
+                resolve(user);
+            } else {
+                console.log("No user. Attempting to sign in anonymously.");
+                try {
+                    const userCredential = await signInAnonymously(auth);
+                    currentUser = userCredential.user;
+                    resolve(currentUser);
+                } catch (error) {
+                    console.error("Anonymous sign-in failed:", error);
+                    syncStatus = 'error';
+                    updateSyncButtonState();
+                    updateSyncStatusUI();
+                    resolve(null);
+                }
+            }
+        });
+    });
+
+    await authCheckPromise;
+    
+    // Guardian Check: One-time force overwrite if cloud data is incorrect.
+    // This runs after authentication is confirmed and only once per session.
+    if (currentUser) {
+        const forceSyncKey = 'hasForcedSync_v1';
+        if (!localStorage.getItem(forceSyncKey)) {
+            const monthKey = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
+            const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
             try {
-                await signInAnonymously(auth);
-                // The onAuthStateChanged will re-trigger with the new user.
-            } catch (error) {
-                console.error("Anonymous sign-in failed:", error);
-                syncStatus = 'error';
-                updateSyncButtonState();
-                updateSyncStatusUI();
-                 // Fallback to local data if sign-in fails
-                currentMonthData = initialMonthData;
-                updateUI();
+                const docSnap = await getDoc(docRef);
+                if (!docSnap.exists() || docSnap.data().dataVersion !== CORRECT_DATA_VERSION) {
+                    console.log(`[GUARDIAN] Overwriting stale/incorrect data for ${monthKey}.`);
+                    await setDoc(docRef, initialMonthData);
+                    localStorage.setItem(forceSyncKey, 'true');
+                }
+            } catch (e) {
+                console.error("[GUARDIAN] Error during force sync:", e);
             }
         }
-    });
+        await loadMonthData(); // Now load the (potentially corrected) data.
+    }
 }
 
 // =================================================================================
@@ -1474,7 +1483,7 @@ function addEventListeners() {
 
 function initApp() {
     console.log("Initializing App...");
-    // Step 1: Immediately render the correct local data.
+    // Step 1: Immediately render the correct local data to prevent blank screen.
     currentMonthData = initialMonthData;
     updateMonthDisplay();
     updateUI();

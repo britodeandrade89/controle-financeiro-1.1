@@ -1,5 +1,5 @@
 // @ts-nocheck
-const CACHE_NAME = 'finance-app-v22-definitive-fix'; // Incremented version for data correction update.
+const CACHE_NAME = 'finance-app-v23-firebase-hosting'; // Incremented version for data correction update.
 
 // All assets needed for the app shell to function offline.
 const ASSETS_TO_CACHE = [
@@ -8,7 +8,8 @@ const ASSETS_TO_CACHE = [
     '/index.css',
     '/icon.svg',
     '/index.tsx',
-    '/firebase-config.js'
+    '/firebase-config.js',
+    '/manifest.json'
 ];
 
 // 1. Install Service Worker & Pre-cache all critical assets

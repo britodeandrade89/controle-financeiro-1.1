@@ -50,7 +50,7 @@ const SPENDING_CATEGORIES = {
 // =================================================================================
 // INITIAL DATA (SOURCE OF TRUTH FOR NOVEMBER 2025)
 // =================================================================================
-const CORRECT_DATA_VERSION = "v1.2-nov2025-final";
+const CORRECT_DATA_VERSION = "v2.0-final";
 const initialMonthData = {
     dataVersion: CORRECT_DATA_VERSION,
     incomes: [
@@ -74,7 +74,7 @@ const initialMonthData = {
         { id: "exp_nov_11", description: "APPAI DA MARCELLY", amount: 110.00, type: "fixed", category: "educacao", paid: false, cyclic: true, dueDate: '2025-11-15', paidDate: null, current: 10, total: 12 },
         { id: "exp_nov_12", description: "APPAI DO ANDRÉ (MARCIA BRITO)", amount: 129.00, type: "fixed", category: "educacao", paid: false, cyclic: true, dueDate: '2025-11-20', paidDate: null, current: 10, total: 12 },
         { id: "exp_nov_13", description: "CIDADANIA PORTUGUESA", amount: 140.00, type: "fixed", category: "outros", paid: false, cyclic: false, dueDate: '2025-11-20', paidDate: null, current: 13, total: 36 },
-        { id: "exp_nov_14", description: "EMPRÉSTIMO PARA ACABAR DE PASSAR ABRIL (MARCIA BRITO)", amount: 220.00, type: "fixed", category: "dividas", paid: false, cyclic: false, dueDate: '2025-11-25', paidDate: null, current: 6, total: 6 },
+        { id: "exp_nov_14", description: "EMPRÉSTimo PARA ACABAR DE PASSAR ABRIL (MARCIA BRITO)", amount: 220.00, type: "fixed", category: "dividas", paid: false, cyclic: false, dueDate: '2025-11-25', paidDate: null, current: 6, total: 6 },
         { id: "exp_nov_15", description: "RENEGOCIAÇÃO DO CARREFOUR (MARCIA BRITO)", amount: 250.00, type: "fixed", category: "dividas", paid: false, cyclic: false, dueDate: '2025-11-28', paidDate: null, current: 2, total: 12 },
         { id: "exp_nov_16", description: "DALUZ (LILI)", amount: 88.50, type: "variable", category: "pessoal", paid: true, cyclic: false, dueDate: '2025-11-03', paidDate: '2025-11-03', current: 1, total: 2 },
         { id: "exp_nov_17", description: "VESTIDO CÍTRICA (LILI)", amount: 53.57, type: "variable", category: "pessoal", paid: true, cyclic: false, dueDate: '2025-11-03', paidDate: '2025-11-03', current: 1, total: 2 },
@@ -93,7 +93,7 @@ const initialMonthData = {
         { id: "exp_nov_30", description: "MÃO DE OBRA DO DAVI (MARCIA BRITO)", amount: 108.33, type: "variable", category: "transporte", paid: false, cyclic: false, dueDate: '2025-11-28', paidDate: null, current: 3, total: 3 },
         { id: "exp_nov_31", description: "PEÇA DO CARRO (MARCIA BRITO)", amount: 45.00, type: "variable", category: "transporte", paid: false, cyclic: false, dueDate: '2025-11-28', paidDate: null, current: 3, total: 3 },
         { id: "exp_nov_32", description: "MULTAS (MARCIA BRITO)", amount: 260.00, type: "variable", category: "transporte", paid: false, cyclic: false, dueDate: '2025-11-30', paidDate: null, current: 2, total: 4 },
-        { id: "exp_nov_33", description: "EMPRÉSTIMO DA TIA CÉLIA", amount: 400.00, type: "variable", category: "dividas", paid: false, cyclic: false, dueDate: '2025-11-30', paidDate: null, current: 8, total: 10 }
+        { id: "exp_nov_33", description: "EMPRÉSTimo DA TIA CÉLIA", amount: 400.00, type: "variable", category: "dividas", paid: false, cyclic: false, dueDate: '2025-11-30', paidDate: null, current: 8, total: 10 }
     ],
     shoppingItems: [],
     avulsosItems: [
@@ -149,6 +149,8 @@ let currentMonthData = null; // Start with null data
 let currentMonth = 11; // Start directly in November
 let currentYear = 2025; // Start directly in 2025
 let deferredPrompt;
+let hasForcedCloudUpdate = localStorage.getItem('hasForcedCloudUpdate') === 'true';
+
 
 // =================================================================================
 // FIREBASE SYNC STATE
@@ -157,7 +159,6 @@ let currentUser = null;
 let firestoreUnsubscribe = null;
 let isSyncing = false;
 let syncStatus = 'disconnected'; // 'disconnected', 'syncing', 'synced', 'error'
-let syncErrorDetails = '';
 
 
 // =================================================================================
@@ -165,8 +166,6 @@ let syncErrorDetails = '';
 // =================================================================================
 const elements = {
     monthDisplay: document.getElementById('monthDisplay'),
-    
-    // Home screen cards
     totalIncome: document.getElementById('totalIncome'),
     totalIncomeProgressBar: document.getElementById('totalIncomeProgressBar'),
     totalIncomeSubtitle: document.getElementById('totalIncomeSubtitle'),
@@ -181,9 +180,6 @@ const elements = {
     monthlyDebtsSubtitle: document.getElementById('monthlyDebtsSubtitle'),
     finalBalance: document.getElementById('finalBalance'),
     finalBalanceSubtitle: document.getElementById('finalBalanceSubtitle'),
-
-
-    // Lists and other elements
     incomesList: document.getElementById('incomesList'),
     expensesList: document.getElementById('expensesList'),
     shoppingList: document.getElementById('shoppingList'),
@@ -312,9 +308,7 @@ function populateCategorySelects() {
 // DATA HANDLING & SYNC
 // =================================================================================
 async function saveDataToFirestore() {
-    if (!currentUser || !isConfigured || !currentMonthData) {
-        return;
-    }
+    if (!currentUser || !isConfigured || !currentMonthData) return;
     if (isSyncing) return;
 
     isSyncing = true;
@@ -330,7 +324,6 @@ async function saveDataToFirestore() {
     } catch (error) {
         console.error("Error saving data to Firestore:", error);
         syncStatus = 'error';
-        alert("Não foi possível salvar os dados na nuvem. Verifique sua conexão com a internet.");
     } finally {
         isSyncing = false;
         updateSyncButtonState();
@@ -343,15 +336,15 @@ function saveData() {
     saveDataToFirestore();
 }
 
-async function loadMonthData() {
+async function loadDataForCurrentMonth() {
     if (firestoreUnsubscribe) {
         firestoreUnsubscribe();
         firestoreUnsubscribe = null;
     }
 
     if (!currentUser || !isConfigured) {
-        console.warn("Firebase not configured or no user. Cannot load cloud data.");
-        updateUI(); // Render with whatever data is currently in state
+        console.warn("Firebase not configured. Cannot load cloud data.");
+        updateUI(); 
         return;
     }
 
@@ -360,12 +353,9 @@ async function loadMonthData() {
     
     try {
         const docSnap = await getDoc(docRef);
-
         if (docSnap.exists()) {
-            console.log(`[Data] Found valid data for ${monthKey} in cloud.`);
-            currentMonthData = docSnap.data();
+             currentMonthData = docSnap.data();
         } else {
-            console.log(`[Data] No data for ${monthKey}, creating new month.`);
             await createNewMonthData();
         }
     } catch(error) {
@@ -386,7 +376,7 @@ function attachFirestoreListener() {
     const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
     
     firestoreUnsubscribe = onSnapshot(docRef, (docSnap) => {
-        if (docSnap.exists()) {
+        if (docSnap.exists() && !isSyncing) { // Prevent local overrides during sync
             console.log(`[Firestore Listener] Real-time update for ${monthKey}`);
             currentMonthData = docSnap.data();
             updateUI();
@@ -410,13 +400,16 @@ async function createNewMonthData() {
     
     if(isConfigured && currentUser) {
         const prevDocRef = doc(db, 'users', currentUser.uid, 'months', previousMonthKey);
-        const prevDocSnap = await getDoc(prevDocRef);
-        if (prevDocSnap.exists()) {
-            baseData = prevDocSnap.data();
-        }
+        try {
+            const prevDocSnap = await getDoc(prevDocRef);
+            if (prevDocSnap.exists()) {
+                baseData = prevDocSnap.data();
+            }
+        } catch (e) { console.error("Could not fetch previous month data", e); }
     }
 
     if (!baseData) {
+        console.log("No previous month data found, using initial data as base.");
         baseData = initialMonthData;
     }
     
@@ -482,7 +475,7 @@ function changeMonth(direction) {
             currentYear--;
         }
     }
-    loadMonthData();
+    loadDataForCurrentMonth();
 }
 
 // =================================================================================
@@ -743,12 +736,11 @@ function renderGoals() {
     const goals = currentMonthData.goals || [];
     const avulsosTotal = (currentMonthData.avulsosItems || []).reduce((sum, item) => sum + item.amount, 0);
 
-    // Add automatic 'avulsos' goal if it doesn't exist
     let avulsosGoal = goals.find(g => g.category === 'avulsos');
     if (!avulsosGoal) {
         avulsosGoal = { id: 'goal_avulsos', category: 'avulsos', amount: Math.max(400, avulsosTotal * 0.5), isAuto: true };
     } else {
-        avulsosGoal.isAuto = true; // Mark it as auto
+        avulsosGoal.isAuto = true;
     }
 
     const allGoals = [avulsosGoal, ...goals.filter(g => g.category !== 'avulsos')];
@@ -866,7 +858,8 @@ function resetForms() {
     elements.goalForm.reset();
     elements.accountForm.reset();
     ['typeGroup', 'categoryGroup', 'installmentsGroup', 'dueDateGroup', 'cyclicGroup'].forEach(id => {
-        document.getElementById(id).style.display = 'none';
+        const el = document.getElementById(id);
+        if(el) el.style.display = 'none';
     });
 }
 
@@ -881,7 +874,6 @@ function setupAddModal(type) {
     document.getElementById('amount').placeholder = 'R$ 0,00';
     document.getElementById('description').placeholder = 'Descrição da despesa';
     
-    // Set hidden input to identify form type on submit
     let typeInput = document.getElementById('formType');
     if (!typeInput) {
         typeInput = document.createElement('input');
@@ -915,10 +907,11 @@ function setupAddModal(type) {
 
 function setupEditModal(id, type) {
     resetForms();
-    const item = (currentMonthData[`${type}s`] || currentMonthData[`${type}Items`] || []).find(i => i.id === id);
+    const listName = type.endsWith('e') ? `${type}s` : `${type}Items`;
+    const item = (currentMonthData[listName] || []).find(i => i.id === id);
     if (!item) return;
 
-    elements.editModalTitle.textContent = `Editar ${type === 'income' ? 'Receita' : 'Despesa'}`;
+    elements.editModalTitle.textContent = `Editar ${type === 'incomes' ? 'Receita' : 'Despesa'}`;
     elements.editItemId.value = id;
     elements.editItemType.value = type;
     elements.editDescription.value = item.description;
@@ -1179,7 +1172,6 @@ function handleTogglePaid(id, type) {
 // AI CHAT
 // =================================================================================
 function initializeChat() {
-    // This function can now be simpler as the chat instance is created on-demand
     try {
         const welcomeMessage = `Olá! Sou o Finanças AI. Como posso ajudar a analisar suas finanças de ${getMonthName(currentMonth)}?`;
         addMessageToChatUI(welcomeMessage, 'ai');
@@ -1226,18 +1218,14 @@ function updateSyncButtonState() {
         case 'synced':
             syncBtn.innerHTML = ICONS.cloudCheck;
             syncBtn.title = "Dados salvos na nuvem";
-            syncBtn.disabled = true; // Disabled because it's automatic
+            syncBtn.disabled = true; 
             break;
         case 'error':
             syncBtn.innerHTML = ICONS.cloudOff;
-            syncBtn.title = "Erro na sincronização. Clique para tentar novamente.";
+            syncBtn.title = "Erro na sincronização. Verifique a configuração.";
             syncBtn.classList.add('sync-error');
-            syncBtn.disabled = false;
+            syncBtn.disabled = true;
             break;
-        default:
-             syncBtn.innerHTML = ICONS.cloudUp;
-             syncBtn.title = "Sincronizar manualmente";
-             syncBtn.disabled = false;
     }
 }
 
@@ -1272,60 +1260,53 @@ function updateSyncStatusUI() {
 }
 
 
-async function initFirebaseAuth() {
+async function initFirebaseAuthAndSync() {
     if (!isConfigured) {
-        console.warn("Firebase not configured. Sync disabled.");
         syncStatus = 'disconnected';
         updateSyncButtonState();
         updateSyncStatusUI();
         return;
     }
 
-    const authCheckPromise = new Promise((resolve) => {
-        onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                currentUser = user;
-                console.log("Authenticated anonymously:", user.uid);
-                resolve(user);
-            } else {
-                console.log("No user. Attempting to sign in anonymously.");
-                try {
-                    const userCredential = await signInAnonymously(auth);
-                    currentUser = userCredential.user;
-                    resolve(currentUser);
-                } catch (error) {
-                    console.error("Anonymous sign-in failed:", error);
-                    syncStatus = 'error';
-                    updateSyncButtonState();
-                    updateSyncStatusUI();
-                    resolve(null);
-                }
+    onAuthStateChanged(auth, async (user) => {
+        if (user) {
+            currentUser = user;
+        } else {
+            try {
+                const userCredential = await signInAnonymously(auth);
+                currentUser = userCredential.user;
+            } catch (error) {
+                console.error("Anonymous sign-in failed:", error);
+                syncStatus = 'error';
+                updateSyncButtonState();
+                updateSyncStatusUI();
+                return;
             }
-        });
-    });
+        }
 
-    await authCheckPromise;
-    
-    // Guardian Check: One-time force overwrite if cloud data is incorrect.
-    // This runs after authentication is confirmed and only once per session.
-    if (currentUser) {
-        const forceSyncKey = 'hasForcedSync_v1';
-        if (!localStorage.getItem(forceSyncKey)) {
+        updateSyncStatusUI();
+        
+        // Guardian logic: Check and correct data on the cloud only once.
+        if (!hasForcedCloudUpdate) {
             const monthKey = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
             const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
             try {
                 const docSnap = await getDoc(docRef);
                 if (!docSnap.exists() || docSnap.data().dataVersion !== CORRECT_DATA_VERSION) {
-                    console.log(`[GUARDIAN] Overwriting stale/incorrect data for ${monthKey}.`);
+                    console.log(`[GUARDIAN] Cloud data is incorrect. Forcing overwrite.`);
                     await setDoc(docRef, initialMonthData);
-                    localStorage.setItem(forceSyncKey, 'true');
+                    localStorage.setItem('hasForcedCloudUpdate', 'true');
+                    hasForcedCloudUpdate = true;
                 }
             } catch (e) {
-                console.error("[GUARDIAN] Error during force sync:", e);
+                 console.error("[GUARDIAN] Error during data verification:", e);
+                 syncStatus = 'error';
             }
         }
-        await loadMonthData(); // Now load the (potentially corrected) data.
-    }
+        
+        // Now that the cloud is guaranteed to be correct, load and listen
+        loadDataForCurrentMonth();
+    });
 }
 
 // =================================================================================
@@ -1345,10 +1326,7 @@ function setupPwaInstall() {
     installBtn.addEventListener('click', async () => {
         if (deferredPrompt) {
             deferredPrompt.prompt();
-            const { outcome } = await deferredPrompt.userChoice;
-            if (outcome === 'accepted') {
-                console.log('User accepted the A2HS prompt');
-            }
+            await deferredPrompt.userChoice;
             deferredPrompt = null;
             installBanner.classList.remove('visible');
         }
@@ -1364,11 +1342,9 @@ function setupPwaInstall() {
 // APP INITIALIZATION & EVENT LISTENERS
 // =================================================================================
 function addEventListeners() {
-    // Month navigation
     document.getElementById('prevMonthBtn').addEventListener('click', () => changeMonth('prev'));
     document.getElementById('nextMonthBtn').addEventListener('click', () => changeMonth('next'));
     
-    // Tab bar navigation
     elements.tabBar.addEventListener('click', (e) => {
         const tabBtn = e.target.closest('.tab-btn');
         if (!tabBtn) return;
@@ -1386,7 +1362,6 @@ function addEventListeners() {
         document.getElementById(viewId).classList.add('active');
     });
 
-    // Segmented control for lists
     document.querySelector('.segmented-control').addEventListener('click', (e) => {
         const segBtn = e.target.closest('.segmented-btn');
         if (!segBtn) return;
@@ -1405,7 +1380,6 @@ function addEventListeners() {
         else if (listId === 'avulsosList') document.getElementById('openAddAvulsoModalBtn').style.display = 'flex';
     });
     
-    // Open Modals
     document.getElementById('openAddIncomeModalBtn').addEventListener('click', () => setupAddModal('income'));
     document.getElementById('openAddExpenseModalBtn').addEventListener('click', () => setupAddModal('expense'));
     document.getElementById('openAddShoppingModalBtn').addEventListener('click', () => setupAddModal('shopping'));
@@ -1413,7 +1387,6 @@ function addEventListeners() {
     document.getElementById('openAddGoalModalBtn').addEventListener('click', () => setupGoalModal());
     document.getElementById('openAddAccountModalBtn').addEventListener('click', () => setupAccountModal());
 
-    // Close Modals
     document.getElementById('closeAddModalBtn').addEventListener('click', () => closeModal(elements.addModal));
     document.getElementById('cancelAddBtn').addEventListener('click', () => closeModal(elements.addModal));
     document.getElementById('closeEditModalBtn').addEventListener('click', () => closeModal(elements.editModal));
@@ -1424,14 +1397,12 @@ function addEventListeners() {
     document.getElementById('closeAccountModalBtn').addEventListener('click', () => closeModal(elements.accountModal));
     document.getElementById('cancelAccountBtn').addEventListener('click', () => closeModal(elements.accountModal));
 
-    // Form Submissions
     elements.addForm.addEventListener('submit', handleAddFormSubmit);
     elements.editForm.addEventListener('submit', handleEditFormSubmit);
     elements.goalForm.addEventListener('submit', handleGoalFormSubmit);
     elements.accountForm.addEventListener('submit', handleAccountFormSubmit);
     elements.aiChatForm.addEventListener('submit', handleAiChatFormSubmit);
 
-    // Dynamic list item actions (event delegation)
     document.querySelector('.lists-container').addEventListener('click', e => {
         const checkBtn = e.target.closest('.check-btn');
         const editBtn = e.target.closest('.edit-btn');
@@ -1440,9 +1411,7 @@ function addEventListeners() {
         if (checkBtn) {
             handleTogglePaid(checkBtn.dataset.id, checkBtn.dataset.type);
         } else if (editBtn) {
-            const type = editBtn.dataset.type;
-            const itemType = type.slice(0, -1); // 'incomes' -> 'income'
-            setupEditModal(editBtn.dataset.id, type);
+            setupEditModal(editBtn.dataset.id, editBtn.dataset.type);
         } else if (deleteBtn) {
             const type = deleteBtn.dataset.type;
             const listName = type.endsWith('e') ? `${type}s` : `${type}Items`;
@@ -1464,7 +1433,6 @@ function addEventListeners() {
         if (deleteBtn) handleDelete(deleteBtn.dataset.id, 'account', 'bankAccounts');
     });
 
-    // Format currency inputs on blur
     ['amount', 'editAmount', 'goalAmount', 'accountBalance'].forEach(id => {
         document.getElementById(id).addEventListener('blur', e => {
             if(!e.target.value) return;
@@ -1482,19 +1450,23 @@ function addEventListeners() {
 }
 
 function initApp() {
-    console.log("Initializing App...");
-    // Step 1: Immediately render the correct local data to prevent blank screen.
+    console.log("Initializing App (Definitive Fix v2)...");
+    
+    // Step 1: Immediately render the correct local data. This is guaranteed to show the right information first.
+    console.log("Step 1: Forcing render of local November 2025 data.");
     currentMonthData = initialMonthData;
     updateMonthDisplay();
     updateUI();
 
     // Step 2: Set up all UI interactions.
+    console.log("Step 2: Setting up UI event listeners.");
     populateCategorySelects();
     addEventListeners();
     setupPwaInstall();
     
-    // Step 3: Connect to Firebase in the background to sync.
-    initFirebaseAuth();
+    // Step 3: Connect to Firebase in the background to sync and correct the cloud data if needed.
+    console.log("Step 3: Connecting to Firebase for background sync and data correction.");
+    initFirebaseAuthAndSync();
 }
 
 document.addEventListener('DOMContentLoaded', initApp);

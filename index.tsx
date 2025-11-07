@@ -145,7 +145,7 @@ const initialMonthData = {
 // =================================================================================
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 let chat: Chat | null = null;
-let currentMonthData = { incomes: [], expenses: [], shoppingItems: [], avulsosItems: [], goals: [], bankAccounts: [] };
+let currentMonthData = null; // Start with null data
 let currentMonth = 11; // Start directly in November
 let currentYear = 2025; // Start directly in 2025
 let deferredPrompt;
@@ -246,6 +246,7 @@ const elements = {
 // UTILS
 // =================================================================================
 function formatCurrency(value) {
+    if (typeof value !== 'number') value = 0;
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
 }
 
@@ -308,10 +309,10 @@ function populateCategorySelects() {
 
 
 // =================================================================================
-// DATA HANDLING (FIREBASE ONLY)
+// DATA HANDLING & SYNC
 // =================================================================================
 async function saveDataToFirestore() {
-    if (!currentUser || !isConfigured) {
+    if (!currentUser || !isConfigured || !currentMonthData) {
         return;
     }
     if (isSyncing) return;
@@ -326,7 +327,6 @@ async function saveDataToFirestore() {
     try {
         await setDoc(docRef, currentMonthData);
         syncStatus = 'synced';
-        updateLastSyncTime(true);
     } catch (error) {
         console.error("Error saving data to Firestore:", error);
         syncStatus = 'error';
@@ -343,105 +343,87 @@ function saveData() {
     saveDataToFirestore();
 }
 
-
-async function initializeAndVerifyData() {
+async function loadMonthData() {
     if (!currentUser || !isConfigured) {
-        // If firebase is not configured, load the default data locally.
-        console.log("Firebase not configured. Loading initial data locally.");
-        currentMonthData = initialMonthData;
-        updateUI();
-        updateMonthDisplay();
+        console.warn("Firebase not configured or no user. Cannot load cloud data.");
+        // We already loaded local data, so we can just stop here.
         return;
     }
 
-    console.log("Verifying cloud data for November 2025...");
-    const monthKey = '2025-11';
-    const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
-
-    try {
-        const docSnap = await getDoc(docRef);
-        
-        // CHECK 1: If doc doesn't exist OR data version is wrong, FORCE overwrite.
-        if (!docSnap.exists() || docSnap.data().dataVersion !== CORRECT_DATA_VERSION) {
-            console.warn(`Cloud data for ${monthKey} is missing or outdated. Force-syncing correct data...`);
-            currentMonthData = initialMonthData;
-            await setDoc(docRef, currentMonthData);
-            console.log("Force-sync complete.");
-        } else {
-            // CHECK 2: Data exists and is the correct version.
-            console.log(`Correct data version found for ${monthKey}. Loading from cloud.`);
-            currentMonthData = docSnap.data();
-        }
-        
-        // After ensuring data is correct (local or from cloud), update UI and start listening.
-        updateUI();
-        updateMonthDisplay();
-        attachFirestoreListener();
-
-    } catch (error) {
-        console.error("Failed to verify/sync initial data:", error);
-        alert("Não foi possível carregar os dados da nuvem. O app pode não funcionar corretamente.");
-        // Fallback to local data on error
-        currentMonthData = initialMonthData;
-        updateUI();
-        updateMonthDisplay();
-    }
-}
-
-function attachFirestoreListener() {
-    if (!currentUser || !isConfigured) return;
-    
-    // Detach any previous listener
     if (firestoreUnsubscribe) {
-        firestoreUnsubscribe();
+        firestoreUnsubscribe(); // Detach old listener before fetching new month
     }
 
     const monthKey = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
     const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
     
+    try {
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+            console.log(`[Data] Found data for ${monthKey} in cloud.`);
+            currentMonthData = docSnap.data();
+        } else {
+            console.log(`[Data] No data for ${monthKey}, creating new month.`);
+            await createNewMonthData();
+        }
+    } catch(error) {
+        console.error(`[Data] Error fetching month ${monthKey}:`, error);
+        syncStatus = 'error';
+    } finally {
+        updateUI();
+        updateMonthDisplay();
+        attachFirestoreListener(); // Re-attach listener for the current month
+    }
+}
+
+
+function attachFirestoreListener() {
+    if (!currentUser || !isConfigured) return;
+    
+    const monthKey = `${currentYear}-${currentMonth.toString().padStart(2, '0')}`;
+    const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
+    
     firestoreUnsubscribe = onSnapshot(docRef, (docSnap) => {
         if (docSnap.exists()) {
-            console.log(`[Firestore Listener] Data updated for ${monthKey}`);
+            console.log(`[Firestore Listener] Real-time update for ${monthKey}`);
             currentMonthData = docSnap.data();
-            updateUI();
-        } else {
-            console.log(`[Firestore Listener] No data for ${monthKey}, creating new month.`);
-            createNewMonthData();
+            updateUI(); // Update UI with fresh data from the cloud
         }
-        updateMonthDisplay();
     }, (error) => {
-        console.error("Error listening to Firestore:", error);
+        console.error("Error with Firestore listener:", error);
         syncStatus = 'error';
         updateSyncButtonState();
-        alert("Erro de conexão com o banco de dados. Tentando reconectar...");
     });
 }
 
 
 async function createNewMonthData() {
-    console.log("[Data] Creating new month data for a future month...");
-    if (!currentUser || !isConfigured) return;
-
+    console.log("[Data] Creating new month data from previous month...");
+    
     const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
     const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
     const previousMonthKey = `${prevYear}-${prevMonth.toString().padStart(2, '0')}`;
     
     let baseData = null;
-    const prevDocRef = doc(db, 'users', currentUser.uid, 'months', previousMonthKey);
-    const prevDocSnap = await getDoc(prevDocRef);
-    if (prevDocSnap.exists()) {
-        baseData = prevDocSnap.data();
+    
+    if(isConfigured && currentUser) {
+        const prevDocRef = doc(db, 'users', currentUser.uid, 'months', previousMonthKey);
+        const prevDocSnap = await getDoc(prevDocRef);
+        if (prevDocSnap.exists()) {
+            baseData = prevDocSnap.data();
+        }
     }
 
-    if (!baseData || typeof baseData !== 'object') {
-        // Fallback if previous month is somehow empty
-        baseData = { incomes: [], expenses: [], shoppingItems: [], avulsosItems: [], goals: [], bankAccounts: [] };
+    // Fallback if no cloud data is found for the previous month
+    if (!baseData) {
+        baseData = initialMonthData; // Use the base data as a template
     }
     
     const clonedBankAccounts = (baseData.bankAccounts || []).map(acc => ({...acc}));
     const clonedGoals = (baseData.goals || []).map(goal => ({...goal}));
 
     const newMonthData = {
+        dataVersion: `generated-${Date.now()}`,
         incomes: [],
         expenses: [],
         shoppingItems: [],
@@ -460,7 +442,6 @@ async function createNewMonthData() {
     const recurringExpenses = (baseData.expenses || []).filter(exp => exp.cyclic);
     recurringExpenses.forEach(exp => {
         let newCurrent = exp.current;
-        let newTotal = exp.total;
         if (exp.current < exp.total) {
             newCurrent++;
         }
@@ -474,14 +455,12 @@ async function createNewMonthData() {
             paid: false,
             paidDate: null,
             current: newCurrent,
-            total: newTotal,
             dueDate: newDueDate.toISOString().split('T')[0]
         });
     });
 
     currentMonthData = newMonthData;
     await saveDataToFirestore(); 
-    updateUI();
 }
 
 function updateMonthDisplay() {
@@ -502,13 +481,15 @@ function changeMonth(direction) {
             currentYear--;
         }
     }
-    attachFirestoreListener();
+    loadMonthData(); // This will handle fetching or creating the new month's data
 }
 
 // =================================================================================
 // CALCULATIONS
 // =================================================================================
 function calculateTotals() {
+    if (!currentMonthData) return { totalIncome: 0, salaryIncome: 0, mumbucaIncome: 0, totalExpenses: 0, paidExpenses: 0, salarySpent: 0, mumbucaSpent: 0, finalBalance: 0, totalToPayForMarcia: 0 };
+
     const incomes = currentMonthData.incomes || [];
     const expenses = currentMonthData.expenses || [];
     const shopping = currentMonthData.shoppingItems || [];
@@ -545,6 +526,7 @@ function calculateTotals() {
 
 
 function calculateCategoryTotals() {
+    if (!currentMonthData) return [];
     const categoryTotals = {};
     const allItems = [...(currentMonthData.expenses || []), ...(currentMonthData.shoppingItems || []), ...(currentMonthData.avulsosItems || [])];
     
@@ -646,10 +628,10 @@ function renderPieChart() {
     let currentAngle = 0;
     
     categoryTotals.forEach((cat, index) => {
-        const percentage = (cat.amount / totalSpent) * 100;
+        const percentage = totalSpent > 0 ? (cat.amount / totalSpent) * 100 : 0;
         const color = colors[index % colors.length];
         
-        const angle = (cat.amount / totalSpent) * 360;
+        const angle = totalSpent > 0 ? (cat.amount / totalSpent) * 360 : 0;
         gradientParts.push(`${color} ${currentAngle}deg ${currentAngle + angle}deg`);
         currentAngle += angle;
 
@@ -1148,9 +1130,18 @@ async function handleAiChatFormSubmit(e) {
     const fullPrompt = `${financialContext}\n\n**Pergunta do usuário:** ${prompt}`;
 
     try {
-        const result = await chat.sendMessage(fullPrompt);
-        const response = await result.response;
-        const text = response.text();
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [{
+            role: 'user', 
+            parts: [{text: fullPrompt}]
+          }],
+          config: {
+            systemInstruction: "Você é um assistente financeiro amigável e prestativo para um aplicativo de finanças pessoais. Seu nome é 'Finanças AI'. Analise os dados fornecidos e responda às perguntas do usuário de forma clara, concisa e com dicas úteis. Use formatação markdown simples, como **negrito**, para destacar pontos importantes. Não use cabeçalhos (#). Seja sempre positivo e encorajador.",
+          }
+        });
+
+        const text = response.text;
         loadingBubble.innerHTML = simpleMarkdownToHtml(text);
     } catch (error) {
         console.error("Gemini API error:", error);
@@ -1185,15 +1176,8 @@ function handleTogglePaid(id, type) {
 // AI CHAT
 // =================================================================================
 function initializeChat() {
+    // This function can now be simpler as the chat instance is created on-demand
     try {
-        const model = 'gemini-2.5-flash';
-        chat = ai.chats.create({
-            model,
-            config: {
-                systemInstruction: "Você é um assistente financeiro amigável e prestativo para um aplicativo de finanças pessoais. Seu nome é 'Finanças AI'. Analise os dados fornecidos e responda às perguntas do usuário de forma clara, concisa e com dicas úteis. Use formatação markdown simples, como **negrito**, para destacar pontos importantes. Não use cabeçalhos (#). Seja sempre positivo e encorajador.",
-            },
-        });
-        
         const welcomeMessage = `Olá! Sou o Finanças AI. Como posso ajudar a analisar suas finanças de ${getMonthName(currentMonth)}?`;
         addMessageToChatUI(welcomeMessage, 'ai');
     } catch(e) {
@@ -1239,11 +1223,11 @@ function updateSyncButtonState() {
         case 'synced':
             syncBtn.innerHTML = ICONS.cloudCheck;
             syncBtn.title = "Dados salvos na nuvem";
-            syncBtn.disabled = true;
+            syncBtn.disabled = true; // Disabled because it's automatic
             break;
         case 'error':
             syncBtn.innerHTML = ICONS.cloudOff;
-            syncBtn.title = "Erro na sincronização";
+            syncBtn.title = "Erro na sincronização. Clique para tentar novamente.";
             syncBtn.classList.add('sync-error');
             syncBtn.disabled = false;
             break;
@@ -1251,13 +1235,6 @@ function updateSyncButtonState() {
              syncBtn.innerHTML = ICONS.cloudUp;
              syncBtn.title = "Sincronizar manualmente";
              syncBtn.disabled = false;
-    }
-}
-
-function updateLastSyncTime(isSuccess) {
-    if (isSuccess) {
-        const time = new Date().toLocaleTimeString('pt-BR');
-        localStorage.setItem('lastSyncSuccess', time);
     }
 }
 
@@ -1292,35 +1269,50 @@ function updateSyncStatusUI() {
 }
 
 
-function initFirebaseAuth() {
+async function initFirebaseAuth() {
     if (!isConfigured) {
+        console.warn("Firebase not configured. Sync disabled.");
         syncStatus = 'disconnected';
         updateSyncButtonState();
         updateSyncStatusUI();
-        // Even if not configured, load the initial local data
-        initializeAndVerifyData();
         return;
     }
 
     onAuthStateChanged(auth, async (user) => {
         if (user) {
             currentUser = user;
-            syncStatus = 'synced'; 
             console.log("Authenticated anonymously:", user.uid);
-            await initializeAndVerifyData();
+            
+            // --- FOOLPROOF DATA CORRECTION ---
+            const monthKey = '2025-11';
+            const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
+            const forceSyncFlag = `force_sync_flag_${CORRECT_DATA_VERSION}`;
+
+            if (!localStorage.getItem(forceSyncFlag)) {
+                 console.log(`FLAG NOT FOUND. Forcing overwrite of ${monthKey} in Firestore.`);
+                 await setDoc(docRef, initialMonthData);
+                 localStorage.setItem(forceSyncFlag, 'true');
+                 console.log("Overwrite complete. Flag set.");
+            }
+            // --- END OF CORRECTION ---
+
+            // Now that data is guaranteed to be correct, load it for the current view.
+            await loadMonthData();
+
         } else {
             currentUser = null;
             syncStatus = 'error';
-            console.log("No user signed in. Attempting to sign in anonymously.");
+            console.log("No user. Attempting to sign in anonymously.");
             try {
                 await signInAnonymously(auth);
+                // The onAuthStateChanged will re-trigger with the new user.
             } catch (error) {
                 console.error("Anonymous sign-in failed:", error);
                 syncStatus = 'error';
+                updateSyncButtonState();
+                updateSyncStatusUI();
             }
         }
-        updateSyncButtonState();
-        updateSyncStatusUI();
     });
 }
 
@@ -1461,8 +1453,14 @@ function addEventListeners() {
     // Format currency inputs on blur
     ['amount', 'editAmount', 'goalAmount', 'accountBalance'].forEach(id => {
         document.getElementById(id).addEventListener('blur', e => {
+            if(!e.target.value) return;
             const value = parseCurrency(e.target.value);
             e.target.value = formatCurrency(value);
+        });
+        document.getElementById(id).addEventListener('focus', e => {
+            if(parseCurrency(e.target.value) === 0) {
+                e.target.value = '';
+            }
         });
     });
 
@@ -1470,9 +1468,18 @@ function addEventListeners() {
 }
 
 function initApp() {
+    console.log("Initializing App...");
+    // Step 1: Immediately render the correct local data.
+    currentMonthData = initialMonthData;
+    updateMonthDisplay();
+    updateUI();
+
+    // Step 2: Set up all UI interactions.
     populateCategorySelects();
     addEventListeners();
     setupPwaInstall();
+    
+    // Step 3: Connect to Firebase in the background to sync.
     initFirebaseAuth();
 }
 

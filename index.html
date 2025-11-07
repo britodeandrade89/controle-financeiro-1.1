@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Controle Financeiro Bispo-Brito</title>
+    
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#14b8a6">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Finanças AI">
+    <link rel="apple-touch-icon" href="icon.svg">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="index.css">
+    
+<script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.21.0",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "firebase/app": "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js",
+    "firebase/auth": "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js",
+    "firebase/firestore": "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js",
+    "firebase/": "https://aistudiocdn.com/firebase@^12.5.0/"
+  }
+}
+</script>
+</head>
+<body>
+    <div id="app-container">
+        <header class="header">
+            <div class="logo">
+                 <div class="logo-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+                </div>
+            </div>
+            <div class="header-controls">
+                <div class="month-selector">
+                    <button id="prevMonthBtn" class="month-btn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                    </button>
+                    <div class="month-display" id="monthDisplay">Outubro 2025</div>
+                    <button id="nextMonthBtn" class="month-btn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                    </button>
+                </div>
+                <button id="sync-btn" class="sync-btn" title="Status da Sincronização"></button>
+            </div>
+        </header>
+
+        <main id="main-content">
+            <div id="pwa-install-banner" class="pwa-install-banner">
+                <div class="pwa-install-banner-content">
+                    <img src="icon.svg" alt="App Icon" class="pwa-install-icon">
+                    <div class="pwa-install-text">
+                        <strong>Instale o App no seu celular</strong>
+                        <span>Acesse suas finanças com um toque, mesmo offline.</span>
+                    </div>
+                    <button id="pwa-install-btn" class="btn">Instalar</button>
+                    <button id="pwa-dismiss-btn" class="close-btn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+            </div>
+
+             <div id="view-home" class="app-view active">
+                <div class="summary-grid">
+                    <div class="summary-card total-income">
+                        <div class="summary-header">
+                            <div class="summary-title">Entrada Total</div>
+                        </div>
+                        <div id="totalIncome" class="summary-value">R$ 0,00</div>
+                        <div class="summary-progress-bar">
+                            <div id="totalIncomeProgressBar" class="summary-progress-bar-inner"></div>
+                        </div>
+                        <div class="summary-details">
+                            <span id="totalIncomeSubtitle">R$ 0,00 gastos de R$ 0,00</span>
+                        </div>
+                    </div>
+                    <div class="summary-card salary-income">
+                        <div class="summary-header">
+                            <div class="summary-title">Entrada Salário</div>
+                        </div>
+                        <div id="salaryIncome" class="summary-value">R$ 0,00</div>
+                        <div class="summary-progress-bar">
+                            <div id="salaryIncomeProgressBar" class="summary-progress-bar-inner"></div>
+                        </div>
+                        <div class="summary-details">
+                            <span id="salaryIncomeSubtitle">R$ 0,00 gastos de R$ 0,00</span>
+                        </div>
+                    </div>
+                    <div class="summary-card mumbuca-income">
+                        <div class="summary-header">
+                            <div class="summary-title">Entrada Mumbuca</div>
+                        </div>
+                        <div id="mumbucaIncome" class="summary-value">R$ 0,00</div>
+                        <div class="summary-progress-bar">
+                            <div id="mumbucaIncomeProgressBar" class="summary-progress-bar-inner"></div>
+                        </div>
+                        <div class="summary-details">
+                            <span id="mumbucaIncomeSubtitle">R$ 0,00 gastos de R$ 0,00</span>
+                        </div>
+                    </div>
+                    <div class="summary-card monthly-debts">
+                        <div class="summary-header">
+                            <div class="summary-title">Dívidas do Mês</div>
+                        </div>
+                        <div id="monthlyDebts" class="summary-value">R$ 0,00</div>
+                        <div class="summary-progress-bar">
+                            <div id="monthlyDebtsProgressBar" class="summary-progress-bar-inner"></div>
+                        </div>
+                        <div class="summary-details">
+                            <span id="monthlyDebtsSubtitle">R$ 0,00 pagos de R$ 0,00</span>
+                        </div>
+                    </div>
+                    <div class="summary-card final-balance">
+                        <div class="summary-header">
+                            <div class="summary-title">Saldo Disponível</div>
+                        </div>
+                        <div id="finalBalance" class="summary-value">R$ 0,00</div>
+                        <div class="summary-progress-bar">
+                            <div id="finalBalanceProgressBar" class="summary-progress-bar-inner"></div>
+                        </div>
+                        <div class="summary-details">
+                            <span id="finalBalanceSubtitle">Salário - Dívidas - Avulsos</span>
+                        </div>
+                    </div>
+                </div>
+
+                 <div class="section chart-container">
+                    <div class="section-header">
+                        <h2 class="section-title">Visão Geral das Despesas</h2>
+                    </div>
+                    <div id="overviewChart"></div>
+                </div>
+            </div>
+
+            <div id="view-lancamentos" class="app-view">
+                <div class="segmented-control">
+                    <button class="segmented-btn active" data-list="incomesList">Receitas</button>
+                    <button class="segmented-btn" data-list="expensesList">Despesas</button>
+                    <button class="segmented-btn" data-list="shoppingList">Compras com Mumbuca</button>
+                    <button class="segmented-btn" data-list="avulsosList">Avulsos</button>
+                </div>
+                
+                <div class="lists-container">
+                    <div id="list-actions">
+                         <button id="openAddIncomeModalBtn" class="btn">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Nova Receita
+                        </button>
+                        <button id="openAddExpenseModalBtn" class="btn" style="display: none;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Nova Despesa
+                        </button>
+                         <button id="openAddShoppingModalBtn" class="btn" style="display: none;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Nova Compra
+                        </button>
+                         <button id="openAddAvulsoModalBtn" class="btn" style="display: none;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Nova Despesa Avulsa
+                        </button>
+                    </div>
+                    <div class="items-list-wrapper">
+                         <div id="incomesList" class="items-list"></div>
+                         <div id="expensesList" class="items-list" style="display: none;"></div>
+                         <div id="shoppingList" class="items-list" style="display: none;"></div>
+                         <div id="avulsosList" class="items-list" style="display: none;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-metas" class="app-view">
+                 <div class="section">
+                    <div class="section-header">
+                        <h2 class="section-title">Metas de Gastos</h2>
+                        <button id="openAddGoalModalBtn" class="btn">
+                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Nova Meta
+                        </button>
+                    </div>
+                    <div id="goalsList" class="goals-list"></div>
+                </div>
+            </div>
+
+            <div id="view-perfil" class="app-view">
+                 <div class="section">
+                    <div class="section-header">
+                        <h2 class="section-title">Sincronização na Nuvem</h2>
+                    </div>
+                    <div class="sync-config-section">
+                        <div id="sync-status-info">Seus dados são salvos automaticamente na nuvem, permitindo o acesso de qualquer dispositivo.</div>
+                        <div id="user-info" style="font-size: 0.9rem; color: var(--text-light); line-height: 1.8; margin-top: 1rem;">
+                            <strong>Status:</strong> <span id="sync-status-text">Conectando...</span><br>
+                            <div id="user-id-container" style="display: none;">
+                                <strong>ID de Sessão:</strong> <span id="user-id-text"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                 <div class="section">
+                    <div class="section-header">
+                        <h2 class="section-title">Contas Bancárias</h2>
+                         <button id="openAddAccountModalBtn" class="btn">
+                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Nova Conta
+                        </button>
+                    </div>
+                     <div id="bankAccountsList"></div>
+                     <div id="accounts-total-container" class="accounts-total">
+                        <span>Saldo Total</span>
+                        <span id="accounts-total-amount">R$ 0,00</span>
+                     </div>
+                </div>
+            </div>
+
+        </main>
+
+        <nav id="tab-bar">
+            <button class="tab-btn active" data-view="home">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+                <span>Início</span>
+            </button>
+            <button class="tab-btn" data-view="lancamentos">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                <span>Lançamentos</span>
+            </button>
+            <button class="tab-btn" data-view="metas">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle></svg>
+                <span>Metas</span>
+            </button>
+            <button class="tab-btn" id="openAiModalBtnTab">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c-1.2 0-2.4.6-3 1.7A3.6 3.6 0 0 0 8.3 9c.5 1.1 1.4 2 2.7 2s2.2-.9 2.7-2c.1-.4.2-.8.3-1.3.6-1.1 0-2.3-1-3.1-.3-.2-.6-.3-1-.3z"></path><path d="M12 21c-1.2 0-2.4-.6-3-1.7A3.6 3.6 0 0 1 8.3 15c.5-1.1 1.4-2 2.7-2s2.2.9 2.7 2c.1.4.2.8.3 1.3.6 1.1 0 2.3-1 3.1-.3-.2-.6-.3-1 .3z"></path><path d="M3 12c0-1.2.6-2.4 1.7-3A3.6 3.6 0 0 1 9 8.3c1.1.5 2 1.4 2 2.7s-.9 2.2-2 2.7c-.4.1-.8.2-1.3.3-1.1.6-2.3 0-3.1-1 .2-.3-.3-.6-.3-1z"></path><path d="M21 12c0-1.2-.6-2.4-1.7-3A3.6 3.6 0 0 0 15 8.3c-1.1.5-2 1.4-2 2.7s.9 2.2 2 2.7c.4.1.8.2 1.3.3 1.1.6 2.3 0-3.1-1 .2-.3.3-.6-.3-1z"></path></svg>
+                <span>Análise IA</span>
+            </button>
+            <button class="tab-btn" data-view="perfil">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                <span>Perfil</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- Add/Edit Modals -->
+    <div id="addModal" class="modal">
+        <div class="modal-content">
+             <header class="modal-header">
+                <h2 id="addModalTitle" class="modal-title">Novo Item</h2>
+                <button id="closeAddModalBtn" class="action-btn">
+                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </header>
+            <form id="addForm">
+                <div class="form-group">
+                    <label for="description" class="form-label">Descrição</label>
+                    <input type="text" id="description" name="description" class="form-input" required placeholder="Ex: Salário, Aluguel, Supermercado">
+                </div>
+                <div class="form-group">
+                    <label for="amount" class="form-label">Valor</label>
+                    <input type="text" id="amount" name="amount" class="form-input" required placeholder="R$ 0,00" inputmode="decimal">
+                </div>
+                <div id="typeGroup" class="form-group" style="display: none;">
+                    <label for="type" class="form-label">Tipo</label>
+                    <select id="type" name="type" class="form-select">
+                        <option value="variable">Variável</option>
+                        <option value="fixed">Fixo</option>
+                    </select>
+                </div>
+                <div id="categoryGroup" class="form-group" style="display: none;">
+                    <label for="category" class="form-label">Categoria</label>
+                    <select id="category" name="category" class="form-select"></select>
+                </div>
+                <div id="dueDateGroup" class="form-group" style="display: none;">
+                    <label for="dueDate" class="form-label">Data de Vencimento</label>
+                    <input type="date" id="dueDate" name="dueDate" class="form-input">
+                </div>
+                <div id="installmentsGroup" class="form-row" style="display: none;">
+                     <div class="form-group">
+                        <label for="currentInstallment" class="form-label">Parcela Atual</label>
+                        <input type="number" id="currentInstallment" name="currentInstallment" class="form-input" min="1" placeholder="1">
+                     </div>
+                     <div class="form-group">
+                         <label for="totalInstallments" class="form-label">Total de Parcelas</label>
+                        <input type="number" id="totalInstallments" name="totalInstallments" class="form-input" min="1" placeholder="12">
+                     </div>
+                </div>
+                <div id="cyclicGroup" class="form-group-checkbox" style="display: none;">
+                    <input type="checkbox" id="cyclic" name="cyclic">
+                    <label for="cyclic">Esta despesa se repete todo mês?</label>
+                </div>
+
+                <footer class="modal-footer">
+                    <button type="button" id="cancelAddBtn" class="btn btn-secondary">Cancelar</button>
+                    <button type="submit" class="btn">Adicionar</button>
+                </footer>
+            </form>
+        </div>
+    </div>
+
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <header class="modal-header">
+                <h2 id="editModalTitle" class="modal-title">Editar Item</h2>
+                <button id="closeEditModalBtn" class="action-btn">
+                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </header>
+            <form id="editForm">
+                <input type="hidden" id="editItemId" name="editItemId">
+                <input type="hidden" id="editItemType" name="editItemType">
+                <div class="form-group">
+                    <label for="editDescription" class="form-label">Descrição</label>
+                    <input type="text" id="editDescription" name="editDescription" class="form-input" required>
+                </div>
+                <div class="form-group">
+                    <label for="editAmount" class="form-label">Valor</label>
+                    <input type="text" id="editAmount" name="editAmount" class="form-input" required inputmode="decimal">
+                </div>
+                 <div id="editCategoryGroup" class="form-group" style="display: none;">
+                    <label for="editCategory" class="form-label">Categoria</label>
+                    <select id="editCategory" name="editCategory" class="form-select"></select>
+                </div>
+                 <div id="editDueDateGroup" class="form-group" style="display: none;">
+                    <label for="editDueDate" class="form-label">Data de Vencimento</label>
+                    <input type="date" id="editDueDate" name="editDueDate" class="form-input">
+                </div>
+                 <div id="editPaidDateGroup" class="form-group" style="display: none;">
+                    <label for="editPaidDate" class="form-label">Data de Pagamento</label>
+                    <input type="date" id="editPaidDate" name="editPaidDate" class="form-input">
+                </div>
+                <div id="editInstallmentsInfo" class="form-info" style="display: none;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                    <span>Alterar as parcelas aqui afeta apenas este lançamento. Para despesas recorrentes, exclua e adicione novamente.</span>
+                </div>
+                <div id="editInstallmentsGroup" class="form-row" style="display: none;">
+                     <div class="form-group">
+                        <label for="editCurrentInstallment" class="form-label">Parcela Atual</label>
+                        <input type="number" id="editCurrentInstallment" name="editCurrentInstallment" class="form-input" min="1">
+                     </div>
+                     <div class="form-group">
+                         <label for="editTotalInstallments" class="form-label">Total</label>
+                        <input type="number" id="editTotalInstallments" name="editTotalInstallments" class="form-input" min="1">
+                     </div>
+                </div>
+                <footer class="modal-footer">
+                    <button type="button" id="cancelEditBtn" class="btn btn-secondary">Cancelar</button>
+                    <button type="submit" class="btn">Salvar</button>
+                </footer>
+            </form>
+        </div>
+    </div>
+    
+    <div id="aiModal" class="modal">
+        <div class="modal-content">
+            <header class="modal-header">
+                <h2 id="aiModalTitle" class="modal-title">Análise IA</h2>
+                <button id="closeAiModalBtn" class="action-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </header>
+            <div id="aiAnalysis">
+                <!-- Chat messages will be appended here -->
+            </div>
+            <footer class="modal-footer ai-footer">
+                <form id="aiChatForm" style="width: 100%;">
+                    <input type="text" id="aiChatInput" class="form-input" placeholder="Pergunte sobre suas finanças...">
+                    <button type="submit" id="aiChatSendBtn" class="btn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                    </button>
+                </form>
+            </footer>
+        </div>
+    </div>
+
+    <div id="goalModal" class="modal">
+        <div class="modal-content">
+            <header class="modal-header">
+                <h2 id="goalModalTitle" class="modal-title">Nova Meta</h2>
+                 <button id="closeGoalModalBtn" class="action-btn">
+                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </header>
+            <form id="goalForm">
+                <input type="hidden" id="goalId" name="goalId">
+                <div class="form-group">
+                    <label for="goalCategory" class="form-label">Categoria</label>
+                    <select id="goalCategory" name="goalCategory" class="form-select" required></select>
+                </div>
+                <div class="form-group">
+                    <label for="goalAmount" class="form-label">Valor da Meta</label>
+                    <input type="text" id="goalAmount" name="goalAmount" class="form-input" required placeholder="R$ 0,00" inputmode="decimal">
+                </div>
+                <footer class="modal-footer">
+                    <button type="button" id="cancelGoalBtn" class="btn btn-secondary">Cancelar</button>
+                    <button type="submit" class="btn">Salvar Meta</button>
+                </footer>
+            </form>
+        </div>
+    </div>
+
+    <div id="accountModal" class="modal">
+        <div class="modal-content">
+             <header class="modal-header">
+                <h2 id="accountModalTitle" class="modal-title">Nova Conta</h2>
+                <button id="closeAccountModalBtn" class="action-btn">
+                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </header>
+            <form id="accountForm">
+                 <input type="hidden" id="accountId" name="accountId">
+                <div class="form-group">
+                    <label for="accountName" class="form-label">Nome da Conta</label>
+                    <input type="text" id="accountName" name="accountName" class="form-input" required placeholder="Ex: Conta Principal, Poupança">
+                </div>
+                <div class="form-group">
+                    <label for="accountBalance" class="form-label">Saldo Atual</label>
+                    <input type="text" id="accountBalance" name="accountBalance" class="form-input" required placeholder="R$ 0,00" inputmode="decimal">
+                </div>
+                <footer class="modal-footer">
+                    <button type="button" id="cancelAccountBtn" class="btn btn-secondary">Cancelar</button>
+                    <button type="submit" class="btn">Salvar Conta</button>
+                </footer>
+            </form>
+        </div>
+    </div>
+
+    <script src="index.tsx" type="module"></script>
+    <script src="firebase-config.js" type="module"></script>
+</body>
+</html>

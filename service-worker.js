@@ -1,5 +1,5 @@
 // @ts-nocheck
-const CACHE_NAME = 'finance-app-v14'; // Incremented version for data correction update.
+const CACHE_NAME = 'finance-app-v20-final-fix'; // Incremented version for data correction update.
 
 // All assets needed for the app shell to function offline.
 const ASSETS_TO_CACHE = [

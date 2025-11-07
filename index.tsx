@@ -50,7 +50,9 @@ const SPENDING_CATEGORIES = {
 // =================================================================================
 // INITIAL DATA (SOURCE OF TRUTH FOR NOVEMBER 2025)
 // =================================================================================
+const CORRECT_DATA_VERSION = "v1.1-nov2025-final";
 const initialMonthData = {
+    dataVersion: CORRECT_DATA_VERSION,
     incomes: [
         { id: "inc_nov_1", description: 'SALARIO MARCELLY', amount: 3349.92, paid: true },
         { id: "inc_nov_2", description: 'SALARIO ANDRE', amount: 3349.92, paid: true },
@@ -144,8 +146,8 @@ const initialMonthData = {
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 let chat: Chat | null = null;
 let currentMonthData = { incomes: [], expenses: [], shoppingItems: [], avulsosItems: [], goals: [], bankAccounts: [] };
-let currentMonth = 11;
-let currentYear = 2025;
+let currentMonth = 11; // Start directly in November
+let currentYear = 2025; // Start directly in 2025
 let deferredPrompt;
 
 // =================================================================================
@@ -341,36 +343,55 @@ function saveData() {
     saveDataToFirestore();
 }
 
-async function showInitialDataAndSync() {
-    console.log("Forcing initial state to November 2025 and syncing with cloud.");
-    
-    // Step 1: Set local state to the correct, hardcoded data
-    currentMonthData = initialMonthData;
-    currentYear = 2025;
-    currentMonth = 11;
-    
-    // Step 2: Render the UI immediately with this correct data
-    updateMonthDisplay();
-    updateUI();
 
-    // Step 3: Force-save this correct data to Firestore to overwrite any old/bad data
-    if (!currentUser || !isConfigured) return;
+async function initializeAndVerifyData() {
+    if (!currentUser || !isConfigured) {
+        // If firebase is not configured, load the default data locally.
+        console.log("Firebase not configured. Loading initial data locally.");
+        currentMonthData = initialMonthData;
+        updateUI();
+        updateMonthDisplay();
+        return;
+    }
+
+    console.log("Verifying cloud data for November 2025...");
     const monthKey = '2025-11';
     const docRef = doc(db, 'users', currentUser.uid, 'months', monthKey);
+
     try {
-        await setDoc(docRef, currentMonthData);
-        console.log("Successfully synced initial November data to Firestore.");
-        // Step 4: Now that the cloud is correct, attach the listener for real-time updates for the CURRENT month
-        loadDataForCurrentMonth();
+        const docSnap = await getDoc(docRef);
+        
+        // CHECK 1: If doc doesn't exist OR data version is wrong, FORCE overwrite.
+        if (!docSnap.exists() || docSnap.data().dataVersion !== CORRECT_DATA_VERSION) {
+            console.warn(`Cloud data for ${monthKey} is missing or outdated. Force-syncing correct data...`);
+            currentMonthData = initialMonthData;
+            await setDoc(docRef, currentMonthData);
+            console.log("Force-sync complete.");
+        } else {
+            // CHECK 2: Data exists and is the correct version.
+            console.log(`Correct data version found for ${monthKey}. Loading from cloud.`);
+            currentMonthData = docSnap.data();
+        }
+        
+        // After ensuring data is correct (local or from cloud), update UI and start listening.
+        updateUI();
+        updateMonthDisplay();
+        attachFirestoreListener();
+
     } catch (error) {
-        console.error("Failed to sync initial data to Firestore:", error);
-        alert("Não foi possível salvar os dados iniciais na nuvem. As alterações podem não ser salvas.");
+        console.error("Failed to verify/sync initial data:", error);
+        alert("Não foi possível carregar os dados da nuvem. O app pode não funcionar corretamente.");
+        // Fallback to local data on error
+        currentMonthData = initialMonthData;
+        updateUI();
+        updateMonthDisplay();
     }
 }
 
-function loadDataForCurrentMonth() {
+function attachFirestoreListener() {
     if (!currentUser || !isConfigured) return;
     
+    // Detach any previous listener
     if (firestoreUnsubscribe) {
         firestoreUnsubscribe();
     }
@@ -380,11 +401,11 @@ function loadDataForCurrentMonth() {
     
     firestoreUnsubscribe = onSnapshot(docRef, (docSnap) => {
         if (docSnap.exists()) {
-            console.log(`[Firestore] Data received for ${monthKey}`);
+            console.log(`[Firestore Listener] Data updated for ${monthKey}`);
             currentMonthData = docSnap.data();
             updateUI();
         } else {
-            console.log(`[Firestore] No data for ${monthKey}, creating new month.`);
+            console.log(`[Firestore Listener] No data for ${monthKey}, creating new month.`);
             createNewMonthData();
         }
         updateMonthDisplay();
@@ -398,7 +419,7 @@ function loadDataForCurrentMonth() {
 
 
 async function createNewMonthData() {
-    console.log("[Data] Creating new month data...");
+    console.log("[Data] Creating new month data for a future month...");
     if (!currentUser || !isConfigured) return;
 
     const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
@@ -413,6 +434,7 @@ async function createNewMonthData() {
     }
 
     if (!baseData || typeof baseData !== 'object') {
+        // Fallback if previous month is somehow empty
         baseData = { incomes: [], expenses: [], shoppingItems: [], avulsosItems: [], goals: [], bankAccounts: [] };
     }
     
@@ -480,7 +502,7 @@ function changeMonth(direction) {
             currentYear--;
         }
     }
-    loadDataForCurrentMonth();
+    attachFirestoreListener();
 }
 
 // =================================================================================
@@ -524,7 +546,7 @@ function calculateTotals() {
 
 function calculateCategoryTotals() {
     const categoryTotals = {};
-    const allItems = [...currentMonthData.expenses, ...currentMonthData.shoppingItems, ...currentMonthData.avulsosItems];
+    const allItems = [...(currentMonthData.expenses || []), ...(currentMonthData.shoppingItems || []), ...(currentMonthData.avulsosItems || [])];
     
     allItems.forEach(item => {
         const category = item.category || 'outros';
@@ -656,7 +678,7 @@ function renderPieChart() {
 
 function renderList(listElement, items, type) {
     listElement.innerHTML = '';
-    if (items.length === 0) {
+    if (!items || items.length === 0) {
         listElement.innerHTML = `<div class="empty-state-small">${ICONS.info}<span>Nenhum item adicionado ainda.</span></div>`;
         return;
     }
@@ -719,24 +741,24 @@ function renderList(listElement, items, type) {
 }
 
 function renderIncomes() {
-    renderList(elements.incomesList, currentMonthData.incomes.slice().sort((a,b) => b.amount - a.amount), 'incomes');
+    renderList(elements.incomesList, (currentMonthData.incomes || []).slice().sort((a,b) => b.amount - a.amount), 'incomes');
 }
 function renderExpenses() {
-    const sortedExpenses = currentMonthData.expenses.slice().sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+    const sortedExpenses = (currentMonthData.expenses || []).slice().sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
     renderList(elements.expensesList, sortedExpenses, 'expenses');
 }
 function renderShopping() {
-    renderList(elements.shoppingList, currentMonthData.shoppingItems.slice().sort((a,b) => b.id - a.id), 'shopping');
+    renderList(elements.shoppingList, (currentMonthData.shoppingItems || []).slice().sort((a,b) => b.id - a.id), 'shopping');
 }
 function renderAvulsos() {
-    const sortedAvulsos = currentMonthData.avulsosItems.slice().sort((a, b) => new Date(b.paidDate) - new Date(a.paidDate));
+    const sortedAvulsos = (currentMonthData.avulsosItems || []).slice().sort((a, b) => new Date(b.paidDate) - new Date(a.paidDate));
     renderList(elements.avulsosList, sortedAvulsos, 'avulsos');
 }
 
 function renderGoals() {
     elements.goalsList.innerHTML = '';
     const goals = currentMonthData.goals || [];
-    const avulsosTotal = currentMonthData.avulsosItems.reduce((sum, item) => sum + item.amount, 0);
+    const avulsosTotal = (currentMonthData.avulsosItems || []).reduce((sum, item) => sum + item.amount, 0);
 
     // Add automatic 'avulsos' goal if it doesn't exist
     let avulsosGoal = goals.find(g => g.category === 'avulsos');
@@ -759,11 +781,11 @@ function renderGoals() {
 
         let spent = 0;
         if (goal.category === 'shopping') {
-            spent = currentMonthData.shoppingItems.reduce((sum, item) => sum + item.amount, 0);
+            spent = (currentMonthData.shoppingItems || []).reduce((sum, item) => sum + item.amount, 0);
         } else if (goal.category === 'avulsos') {
             spent = avulsosTotal;
         } else {
-            spent = currentMonthData.expenses.filter(e => e.category === goal.category).reduce((sum, item) => sum + item.amount, 0);
+            spent = (currentMonthData.expenses || []).filter(e => e.category === goal.category).reduce((sum, item) => sum + item.amount, 0);
         }
 
         const progress = goal.amount > 0 ? (spent / goal.amount) * 100 : 0;
@@ -910,7 +932,7 @@ function setupAddModal(type) {
 
 function setupEditModal(id, type) {
     resetForms();
-    const item = currentMonthData[`${type}s`].find(i => i.id === id);
+    const item = (currentMonthData[`${type}s`] || []).find(i => i.id === id);
     if (!item) return;
 
     elements.editModalTitle.textContent = `Editar ${type === 'income' ? 'Receita' : 'Despesa'}`;
@@ -1139,7 +1161,7 @@ async function handleAiChatFormSubmit(e) {
 
 function handleDelete(id, type, listName) {
     if (confirm(`Tem certeza que deseja excluir este item?`)) {
-        currentMonthData[listName] = currentMonthData[listName].filter(item => item.id !== id);
+        currentMonthData[listName] = (currentMonthData[listName] || []).filter(item => item.id !== id);
         saveData();
     }
 }
@@ -1276,17 +1298,16 @@ function initFirebaseAuth() {
         updateSyncButtonState();
         updateSyncStatusUI();
         // Even if not configured, load the initial local data
-        currentMonthData = initialMonthData;
-        updateUI();
+        initializeAndVerifyData();
         return;
     }
 
     onAuthStateChanged(auth, async (user) => {
         if (user) {
             currentUser = user;
-            syncStatus = 'synced'; // Assume synced on login
+            syncStatus = 'synced'; 
             console.log("Authenticated anonymously:", user.uid);
-            await showInitialDataAndSync(); // This is the new entry point
+            await initializeAndVerifyData();
         } else {
             currentUser = null;
             syncStatus = 'error';
